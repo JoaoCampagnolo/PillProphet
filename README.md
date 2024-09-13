@@ -1,4 +1,4 @@
-# Pharma ML Predictor
+# PillProphet
 
 This project aims to build a machine learning model to predict the likelihood of a drug or treatment advancing into clinical trials based on scientific papers and financial market data.
 
