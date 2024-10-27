@@ -1,0 +1,46 @@
+PillProphet/
+├── README.md
+├── LICENSE
+├── data/
+│   ├── raw/
+│   │   ├── clinical_trials_xml/       # Raw XML files from ClinicalTrials.gov
+│   │   └── twitter_data/              # Raw Twitter data (if stored)
+│   ├── processed/
+│       ├── clinical_trials.csv        # Parsed and processed clinical trial data
+│       └── twitter_data.csv           # Processed Twitter data
+├── scripts/
+│   ├── data_extraction/
+│   │   ├── parse_clinical_trials.py   # Script for parsing XML files
+│   │   └── collect_twitter_data.py    # Script for collecting Twitter data
+│   ├── preprocessing/
+│   │   ├── preprocess_text.py         # Script for text cleaning and normalization
+│   ├── featurization/
+│   │   ├── clinicalbert_featurization.py  # Script for generating embeddings using ClinicalBERT
+│   │   └── lda_topic_modeling.py      # Script for LDA topic modeling
+│   ├── modeling/
+│   │   ├── model_1.py                 # Implementation of Model 1
+│   │   └── model_2.py                 # Implementation of Model 2
+│   ├── signal_aggregation/
+│   │   └── aggregate_signals.py       # Script for aggregating signals
+│   ├── trading_bot/
+│   │   └── stock_market_bot.py        # Script for the trading bot
+│   └── utils/
+│       └── helpers.py                 # Utility functions and classes
+├── notebooks/
+│   ├── data_exploration.ipynb         # Jupyter notebooks for data exploration
+│   ├── model_training.ipynb           # Notebooks for model training and evaluation
+│   └── results_analysis.ipynb         # Notebooks for analyzing results
+├── models/
+│   ├── saved_model_1/                 # Directory for saved Model 1 artifacts
+│   └── saved_model_2/                 # Directory for saved Model 2 artifacts
+├── config/
+│   └── config.yaml                    # Configuration files
+├── docs/
+│   ├── requirements.txt               # Python package requirements
+│   ├── CONTRIBUTING.md                # Guidelines for contributing
+│   └── references.md                  # List of references and sources
+├── tests/
+│   ├── test_data_extraction.py        # Unit tests for data extraction scripts
+│   ├── test_featurization.py          # Unit tests for featurization scripts
+│   └── test_modeling.py               # Unit tests for modeling scripts
+└── .gitignore
