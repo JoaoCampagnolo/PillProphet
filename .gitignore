@@ -1,0 +1,22 @@
+# Ignore zip files
+*.zip
+
+# Ignore large CSV files
+clinical_trials_data_preprocessed.csv
+clinical_trials_with_embeddings.csv
+clinical_trials_data.csv
+
+# Ignore specific directories
+ctg-public-xml/
+ctg-public-xml-small/
+backup/
+data/
+
+# Ignore Jupyter Notebook checkpoints
+__pycache__/
+.ipynb_checkpoints/
+
+# Ignore other system files
+.DS_Store
+Thumbs.db
+
