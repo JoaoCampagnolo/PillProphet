@@ -1,22 +1,57 @@
-# Ignore zip files
-*.zip
-
-# Ignore large CSV files
-clinical_trials_data_preprocessed.csv
-clinical_trials_with_embeddings.csv
-clinical_trials_data.csv
-
-# Ignore specific directories
-ctg-public-xml/
-ctg-public-xml-small/
-backup/
-data/
-
-# Ignore Jupyter Notebook checkpoints
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
 .ipynb_checkpoints/
 
-# Ignore other system files
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
 Thumbs.db
 
+# Environment
+.env
+
+# Data (tracked via DVC or separate storage)
+data/raw/
+data/interim/
+data/processed/
+data/external/
+*.csv
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.zip
+*.gz
+*.tar
+
+# Models
+*.pkl
+*.joblib
+*.pt
+*.onnx
+
+# Legacy
+clinical_trials_data_preprocessed.csv
+clinical_trials_with_embeddings.csv
+clinical_trials_data.csv
+ctg-public-xml/
+ctg-public-xml-small/
+backup/

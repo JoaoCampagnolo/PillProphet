@@ -1,0 +1,13 @@
+# Logistic regression baseline
+
+model_type: "logistic_regression"
+version: "1.0"
+
+params:
+  C: 1.0
+  penalty: "l2"
+  solver: "lbfgs"
+  max_iter: 1000
+  class_weight: "balanced"
+
+feature_set: "structured_v1"

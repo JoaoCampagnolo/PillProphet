@@ -1,0 +1,23 @@
+# Fusion baseline: structured + TF-IDF text features
+
+model_type: "lightgbm"
+version: "1.0"
+
+params:
+  objective: "binary"
+  metric: "auc"
+  n_estimators: 500
+  learning_rate: 0.05
+  num_leaves: 31
+  max_depth: -1
+  min_child_samples: 20
+  subsample: 0.8
+  colsample_bytree: 0.8
+  is_unbalance: true
+  verbose: -1
+
+feature_sets:
+  - "structured_v1"
+  - "text_v1"
+
+fusion_strategy: "late"  # concatenate feature vectors

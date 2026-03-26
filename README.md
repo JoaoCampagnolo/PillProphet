@@ -1,36 +1,86 @@
-# PillProphet
+# PillProphet v2
 
-This project aims to build a machine learning model to predict the likelihood of a drug or treatment advancing into clinical trials based on scientific papers and financial market data.
+A time-aware clinical development intelligence system that uses public trial registry data to predict trial outcomes and explain drivers of success or failure.
 
-### Project Overview
+## Mission
 
-- **Data Sources**: 
-  - Scientific papers published by pharmaceutical companies.
-  - Financial market data (share values before and after announcements).
+PillProphet transforms public clinical trial records into a machine-learning-ready dataset with explicit labels, time-aware feature sets, and reproducible evaluation procedures. It operates in two distinct modes:
 
-- **Objective**:
-  - To predict the approval/rejection of drugs/treatments entering clinical trials.
+- **Forecasting mode**: Using only information available up to time T, estimate the probability of a future outcome (e.g., will this phase 2 trial advance to phase 3?).
+- **Explanation mode**: Using later-available information, infer what likely went right or wrong (e.g., failure due to efficacy, safety, recruitment, or strategic reprioritization).
 
-- **Methodology**:
-  - Scrape and preprocess scientific papers.
-  - Utilize Natural Language Processing (NLP) techniques to extract features.
-  - Analyze market reactions to news about drugs/treatments.
-  - Train and validate machine learning models.
+## v1 Scope
 
-- **Execution Environment**:
-  - The initial development and model training will be conducted using [Google Colab](https://colab.research.google.com/), which provides a free GPU environment.
+- **Unit of analysis**: One trial record (`nct_id`) = one sample
+- **Cohort**: Industry-sponsored interventional drug/biologic phase 1-3 trials
+- **Primary task**: Predict advancement to next development milestone within a fixed time window
+- **Inputs**: Structured protocol metadata + protocol text (registry data only)
+- **Evaluation**: Temporal split only
+- **Baselines**: Logistic regression, LightGBM, TF-IDF + structured fusion
 
-### Current Status
+## Design Principles
 
-- Initial setup completed; data collection and preprocessing are in progress.
-- Exploring potential features and models for prediction.
+1. **Time awareness first** - No model may use fields unavailable at the prediction timepoint
+2. **Label clarity over model complexity** - Good labels beat heroic models trained on noise
+3. **Trial != program** - Start at trial level, evolve toward program/asset-level reasoning
+4. **Reproducibility by default** - Every dataset slice, label, and feature set is traceable
+5. **Baselines before fancy models** - Structured baselines first, deep multimodal later
 
-### Future Work
+## Data Source
 
-- Improve feature engineering techniques.
-- Integrate additional data sources (e.g., clinical trial metadata, patents).
-- Optimize and evaluate machine learning models.
+ClinicalTrials.gov trial records and registry-derived tables.
 
-### How to Run
+## Project Structure
 
-- Clone this repository and open the notebook in Google Colab to start training the model.
+```
+PillProphet/
+├── configs/          # Cohort, label, feature, and model configurations
+├── docs/             # Project spec, policies, and design notes
+├── data/             # raw / interim / processed / external
+├── notebooks/        # Exploration and analysis notebooks
+├── src/pillprophet/  # Core Python package
+│   ├── io/           # Ingestion and storage
+│   ├── cohort/       # Cohort building and filtering
+│   ├── snapshots/    # Timepoint snapshot generation
+│   ├── labels/       # Label factory (operational, development, censoring)
+│   ├── features/     # Structured and text feature extraction
+│   ├── models/       # Training, prediction, evaluation, calibration
+│   ├── analysis/     # Subgroup, error, and explanation analysis
+│   └── utils/        # Logging, paths, config
+├── tests/            # Unit and integration tests
+└── scripts/          # Pipeline entry points
+```
+
+## Quick Start
+
+```bash
+# Install in development mode
+pip install -e ".[dev]"
+
+# Run the ingestion pipeline
+python scripts/run_ingest.py
+
+# Build the cohort
+python scripts/run_cohort.py
+
+# Generate labels
+python scripts/run_labels.py
+
+# Extract features
+python scripts/run_features.py
+
+# Train baseline models
+python scripts/run_train.py
+```
+
+## Documentation
+
+- [Project Specification](docs/project_spec.md)
+- [Cohort Definition](docs/cohort_definition.md)
+- [Label Policy](docs/label_policy.md)
+- [Leakage Policy](docs/leakage_policy.md)
+- [Modeling Plan](docs/modeling_plan.md)
+
+## License
+
+See [LICENSE](LICENSE) for details.

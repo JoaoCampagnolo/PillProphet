@@ -1,0 +1,46 @@
+# Cohort definition: v1 industry-sponsored phase 1-3 drug/biologic trials
+
+version: "1.0"
+
+inclusion:
+  study_type:
+    - "Interventional"
+  intervention_type:
+    - "Drug"
+    - "Biological"
+  phase:
+    - "Phase 1"
+    - "Phase 2"
+    - "Phase 3"
+    - "Phase 1/Phase 2"
+    - "Phase 2/Phase 3"
+  sponsor_class:
+    - "INDUSTRY"
+  outcome_status:
+    - "Completed"
+    - "Terminated"
+    - "Withdrawn"
+    - "Suspended"
+    - "Active, not recruiting"
+    - "Enrolling by invitation"
+
+exclusion:
+  study_type:
+    - "Observational"
+    - "Expanded Access"
+  intervention_type:
+    - "Device"
+    - "Behavioral"
+    - "Dietary Supplement"
+    - "Procedure"
+    - "Radiation"
+    - "Diagnostic Test"
+
+required_fields:
+  - "nct_id"
+  - "brief_title"
+  - "study_type"
+  - "phase"
+  - "overall_status"
+  - "lead_sponsor"
+  - "start_date"
