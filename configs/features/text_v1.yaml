@@ -1,0 +1,41 @@
+# Text feature configuration: v1
+
+version: "1.0"
+
+text_fields:
+  - name: "brief_title"
+    source: "brief_title"
+    time_availability: "T0"
+  - name: "official_title"
+    source: "official_title"
+    time_availability: "T0"
+  - name: "brief_summary"
+    source: "brief_summary"
+    time_availability: "T0"
+  - name: "detailed_description"
+    source: "detailed_description"
+    time_availability: "T0"
+  - name: "eligibility_criteria"
+    source: "eligibility.criteria"
+    time_availability: "T0"
+  - name: "intervention_description"
+    source: "interventions.description"
+    time_availability: "T0"
+  - name: "arm_description"
+    source: "arms.description"
+    time_availability: "T0"
+  - name: "primary_outcome_description"
+    source: "primary_outcomes.description"
+    time_availability: "T0"
+
+preprocessing:
+  lowercase: true
+  remove_html: true
+  min_token_length: 2
+
+tfidf:
+  max_features: 10000
+  ngram_range: [1, 2]
+  min_df: 5
+  max_df: 0.95
+  sublinear_tf: true

@@ -1,0 +1,41 @@
+# Development label configuration: v1
+
+version: "1.0"
+
+primary_target: "phase_advancement"
+
+# Time window (months) after primary completion to check for advancement
+advancement_window_months: 36
+
+# Phase advancement definitions
+advancement_rules:
+  phase_1:
+    target_phases: ["Phase 2", "Phase 1/Phase 2", "Phase 2/Phase 3", "Phase 3"]
+  phase_1_2:
+    target_phases: ["Phase 2", "Phase 2/Phase 3", "Phase 3"]
+  phase_2:
+    target_phases: ["Phase 3", "Phase 2/Phase 3"]
+  phase_2_3:
+    target_phases: ["Phase 3"]
+  phase_3:
+    target_phases: []  # Regulatory approval is a separate label type
+
+# Matching strategy for linking trials across phases
+trial_linking:
+  match_fields:
+    - "intervention_name"  # Normalized drug name
+    - "lead_sponsor"       # Same sponsor
+    - "condition"          # Same indication
+  fuzzy_threshold: 0.85
+
+# Censoring policy
+censoring:
+  # Minimum follow-up time (months) required to label as "did_not_advance"
+  min_followup_months: 36
+  # Trials with less follow-up than this are labeled "censored"
+
+# Label values
+labels:
+  positive: "advanced"
+  negative: "did_not_advance"
+  censored: "censored"
