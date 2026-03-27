@@ -43,8 +43,9 @@ def filter_study_type(
     df: pd.DataFrame,
     allowed: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Keep only rows whose ``study_type`` is in *allowed*."""
-    mask = df["study_type"].isin(allowed)
+    """Keep only rows whose ``study_type`` is in *allowed* (case-insensitive)."""
+    allowed_lower = {s.lower().replace("_", " ") for s in allowed}
+    mask = df["study_type"].str.lower().str.replace("_", " ", regex=False).isin(allowed_lower)
     return _split(df, mask, f"study_type not in {allowed}")
 
 
@@ -58,11 +59,13 @@ def filter_intervention_type(
     produced by ``parse.py``.  A trial passes if *any* of its intervention
     types matches.
     """
+    allowed_lower = {s.lower().replace("_", " ") for s in allowed}
+
     def _has_allowed(val: str | None) -> bool:
         if not isinstance(val, str):
             return False
-        parts = {p.strip() for p in val.split(";")}
-        return bool(parts & set(allowed))
+        parts = {p.strip().lower().replace("_", " ") for p in val.split(";")}
+        return bool(parts & allowed_lower)
 
     mask = df["intervention_types"].apply(_has_allowed)
     return _split(df, mask, f"intervention_type not in {allowed}")
@@ -79,18 +82,22 @@ def filter_phase(
     phase names ("Phase 1", "Phase 2", etc.).  We also normalise common
     API variants (e.g. "PHASE1" -> "Phase 1").
     """
-    # Build a lookup set including both canonical and API-enum forms.
-    allowed_set: set[str] = set()
-    for p in allowed:
-        allowed_set.add(p)
-        # Also accept the ENUM style the API sometimes returns.
-        allowed_set.add(p.upper().replace(" ", ""))
+    # Normalise to lowercase with spaces for uniform comparison.
+    # "Phase 1" -> "phase 1", "PHASE1" -> "phase1" -> "phase 1"
+    def _norm(s: str) -> str:
+        import re
+        s = s.strip().lower().replace("_", " ")
+        # Insert space between "phase" and digit: "phase1" -> "phase 1"
+        s = re.sub(r"phase(\d)", r"phase \1", s)
+        return s
+
+    allowed_normalised = {_norm(p) for p in allowed}
 
     def _phase_match(val: str | None) -> bool:
         if not isinstance(val, str):
             return False
-        parts = {p.strip() for p in val.replace("/", ";").split(";")}
-        return bool(parts & allowed_set)
+        parts = {_norm(p) for p in val.replace("/", ";").split(";")}
+        return bool(parts & allowed_normalised)
 
     mask = df["phases"].apply(_phase_match)
     return _split(df, mask, f"phase not in {allowed}")
@@ -131,8 +138,9 @@ def filter_excluded_study_types(
     df: pd.DataFrame,
     excluded_types: list[str],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Exclude rows whose ``study_type`` is in *excluded_types*."""
-    mask = ~df["study_type"].isin(excluded_types)
+    """Exclude rows whose ``study_type`` is in *excluded_types* (case-insensitive)."""
+    excluded_lower = {s.lower().replace("_", " ") for s in excluded_types}
+    mask = ~df["study_type"].str.lower().str.replace("_", " ", regex=False).isin(excluded_lower)
     return _split(df, mask, f"study_type in excluded list {excluded_types}")
 
 

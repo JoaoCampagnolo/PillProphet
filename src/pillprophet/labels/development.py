@@ -26,28 +26,37 @@ from pillprophet.utils.config import load_config
 logger = logging.getLogger("pillprophet")
 
 # ── Phase ordering ──────────────────────────────────────────────────────────
-# Maps human-readable phase strings to an ordinal so we can check "later".
+# Maps normalised phase strings to an ordinal so we can check "later".
+# Normalisation: lowercase, strip underscores, insert space before digits.
 _PHASE_ORDER: dict[str, int] = {
-    "Early Phase 1": 0,
-    "Phase 1": 1,
-    "Phase 1/Phase 2": 2,
-    "Phase 2": 3,
-    "Phase 2/Phase 3": 4,
-    "Phase 3": 5,
-    "Phase 4": 6,
+    "early phase 1": 0,
+    "phase 1": 1,
+    "phase 1/phase 2": 2,
+    "phase 2": 3,
+    "phase 2/phase 3": 4,
+    "phase 3": 5,
+    "phase 4": 6,
 }
+
+
+def _norm_phase(s: str) -> str:
+    """Normalise a single phase token: 'PHASE1' -> 'phase 1'."""
+    import re
+    s = s.strip().lower().replace("_", " ")
+    s = re.sub(r"phase(\d)", r"phase \1", s)
+    return s
 
 
 def _phase_rank(phase_str: str | None) -> int | None:
     """Return ordinal rank for a phase string, or None if unparseable."""
     if not isinstance(phase_str, str):
         return None
-    # Handle semicolon-separated (e.g. "Phase 1; Phase 2") — take highest.
-    parts = [p.strip() for p in phase_str.replace("/", ";").split(";")]
+    # Handle semicolon-separated (e.g. "PHASE1; PHASE2") — take highest.
+    parts = [_norm_phase(p) for p in phase_str.replace("/", ";").split(";")]
     ranks = [_PHASE_ORDER.get(p) for p in parts]
     valid = [r for r in ranks if r is not None]
-    # Also try the combined form.
-    combined = _PHASE_ORDER.get(phase_str.strip())
+    # Also try the combined form (e.g. "Phase 1/Phase 2").
+    combined = _PHASE_ORDER.get(_norm_phase(phase_str))
     if combined is not None:
         valid.append(combined)
     return max(valid) if valid else None
@@ -68,10 +77,34 @@ def _parse_date(val) -> datetime | None:
 
 
 def _fuzzy_match(a: str | None, b: str | None, threshold: float) -> bool:
-    """Case-insensitive fuzzy string similarity >= *threshold*."""
+    """Case-insensitive fuzzy string similarity >= *threshold*.
+
+    Compares individual intervention names pairwise (splitting on ``;``).
+    Returns True if **any** pair of individual names exceeds the threshold.
+    This handles the common case where comparator arms (e.g. "Placebo")
+    dilute the whole-string similarity.
+    """
     if not a or not b:
         return False
-    return SequenceMatcher(None, a.lower(), b.lower()).ratio() >= threshold
+
+    # First try whole-string match (fast path).
+    if SequenceMatcher(None, a.lower(), b.lower()).ratio() >= threshold:
+        return True
+
+    # Pairwise comparison of individual drug names.
+    a_parts = [p.strip().lower() for p in a.split(";") if p.strip()]
+    b_parts = [p.strip().lower() for p in b.split(";") if p.strip()]
+
+    # Filter out generic comparators that add noise.
+    _GENERIC = {"placebo", "saline", "normal saline", "standard of care", "soc"}
+    a_drugs = [p for p in a_parts if p not in _GENERIC] or a_parts
+    b_drugs = [p for p in b_parts if p not in _GENERIC] or b_parts
+
+    for x in a_drugs:
+        for y in b_drugs:
+            if SequenceMatcher(None, x, y).ratio() >= threshold:
+                return True
+    return False
 
 
 # ── Successor search ────────────────────────────────────────────────────────
