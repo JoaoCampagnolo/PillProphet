@@ -1,6 +1,8 @@
 # Cohort definition: v1 industry-sponsored phase 1-3 drug/biologic trials
+# Note: all filter comparisons are case-insensitive and normalise underscores
+# to spaces, so "Interventional" matches "INTERVENTIONAL" from the API.
 
-version: "1.0"
+version: "1.1"
 
 inclusion:
   study_type:
@@ -14,6 +16,7 @@ inclusion:
     - "Phase 3"
     - "Phase 1/Phase 2"
     - "Phase 2/Phase 3"
+    - "Early Phase 1"
   sponsor_class:
     - "INDUSTRY"
   outcome_status:
@@ -40,7 +43,7 @@ required_fields:
   - "nct_id"
   - "brief_title"
   - "study_type"
-  - "phase"
+  - "phases"
   - "overall_status"
   - "lead_sponsor"
   - "start_date"
