@@ -90,10 +90,15 @@ def build_tfidf_matrix(
     (needed for transforming new data at inference time).
     """
     ngram_range = tuple(config.get("ngram_range", [1, 2]))
+    n_docs = len(texts)
+    min_df = config.get("min_df", 5)
+    # Clamp min_df so it doesn't exceed the number of documents.
+    if isinstance(min_df, int) and min_df >= n_docs:
+        min_df = max(1, n_docs - 1)
     vectorizer = TfidfVectorizer(
         max_features=config.get("max_features", 5000),
         ngram_range=ngram_range,
-        min_df=config.get("min_df", 5),
+        min_df=min_df,
         max_df=config.get("max_df", 0.95),
         sublinear_tf=config.get("sublinear_tf", True),
     )
