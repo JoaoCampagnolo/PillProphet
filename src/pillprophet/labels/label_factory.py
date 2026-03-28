@@ -37,6 +37,21 @@ LABEL_COLUMNS = [
     "notes",
 ]
 
+# v2 development label values.
+DEV_LABEL_VALUES = {
+    "advanced",
+    "hard_negative",
+    "soft_negative",
+    "censored_recent",
+    "censored_in_progress",
+    "censored_early_negative",
+}
+
+# Labels usable for primary modeling (positives + negatives).
+MODELING_POSITIVES = {"advanced"}
+MODELING_NEGATIVES = {"hard_negative", "soft_negative"}
+MODELING_LABELS = MODELING_POSITIVES | MODELING_NEGATIVES
+
 
 def _validate_labels(df: pd.DataFrame) -> None:
     """Raise if any required label columns are missing."""
@@ -82,10 +97,9 @@ def build_all_labels(
     op_labels = build_operational_labels(cohort_df)
     _validate_labels(op_labels)
 
-    # ── 2. Development labels ───────────────────────────────────────────
-    logger.info("Building development labels ...")
+    # ── 2. Development labels (v2 — with eligibility + split labels) ───
+    logger.info("Building development labels (v2) ...")
     dev_labels = build_development_labels(cohort_df, all_trials_df, dev_config_path)
-    # development labels may have extra columns (followup_months) from censoring.
     _validate_labels(dev_labels)
 
     # ── 3. Merge into unified table ─────────────────────────────────────
@@ -129,11 +143,31 @@ def _build_audit(
 
     for ltype in labels_df["label_type"].unique():
         subset = labels_df[labels_df["label_type"] == ltype]
-        audit["label_types"][ltype] = {
+        type_audit: dict = {
             "count": len(subset),
             "distribution": subset["label_value"].value_counts().to_dict(),
             "confidence_distribution": subset["label_confidence"].value_counts().to_dict(),
         }
+
+        # For development labels, add modeling-ready summary.
+        if ltype == "development":
+            modelable = subset[subset["label_value"].isin(MODELING_LABELS)]
+            n_pos = (modelable["label_value"].isin(MODELING_POSITIVES)).sum()
+            n_neg = (modelable["label_value"].isin(MODELING_NEGATIVES)).sum()
+            type_audit["modeling_ready"] = {
+                "total": len(modelable),
+                "positives": int(n_pos),
+                "negatives": int(n_neg),
+                "positive_rate": round(n_pos / len(modelable), 4) if len(modelable) > 0 else 0,
+            }
+
+            # Count excluded.
+            excluded = subset[subset["label_value"].str.startswith("excluded_")]
+            type_audit["excluded_count"] = len(excluded)
+            if len(excluded) > 0:
+                type_audit["exclusion_reasons"] = excluded["label_value"].value_counts().to_dict()
+
+        audit["label_types"][ltype] = type_audit
 
     audit["dev_config"] = str(dev_config_path)
 
@@ -164,11 +198,9 @@ def _save_outputs(
     output_dir.mkdir(parents=True, exist_ok=True)
     tag = time.strftime("%Y%m%d_%H%M%S")
 
-    # Label table (parquet + CSV for easy inspection).
     save_dataset(labels_df, output_dir / f"labels_{tag}", fmt="parquet")
     labels_df.to_csv(output_dir / f"labels_{tag}.csv", index=False)
 
-    # Audit JSON.
     audit_path = output_dir / f"label_audit_{tag}.json"
     with open(audit_path, "w", encoding="utf-8") as f:
         json.dump(audit, f, indent=2, default=str)
@@ -176,11 +208,7 @@ def _save_outputs(
 
 
 def export_label_audit(labels_df: pd.DataFrame, output_path: str | Path) -> None:
-    """Export a human-readable label audit table.
-
-    Pivots the unified label table so each row is one ``nct_id`` with
-    columns for each label type's value and confidence.
-    """
+    """Export a human-readable label audit table."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -190,7 +218,6 @@ def export_label_audit(labels_df: pd.DataFrame, output_path: str | Path) -> None
         values="label_value",
         aggfunc="first",
     )
-    # Add confidence columns.
     conf_pivot = labels_df.pivot_table(
         index="nct_id",
         columns="label_type",

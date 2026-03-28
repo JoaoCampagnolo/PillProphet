@@ -88,7 +88,7 @@ def main() -> None:
     dev_labels = labels_df[labels_df["label_type"] == "development"].copy()
     logger.info("Development labels: %d total", len(dev_labels))
 
-    # ── Filter to requested phase ───────────────────────────────────────
+    # ── Filter to requested phase (v2: also show excluded) ──────────────
     # Join with studies to get phase info.
     if "phases" not in dev_labels.columns:
         dev_labels = dev_labels.merge(
@@ -98,8 +98,12 @@ def main() -> None:
             how="left",
         )
 
+    # v2: eligible trials are already phase-filtered by dev_eligibility.
+    # For audit, show all labels (including excluded) for the requested phase.
     phase_mask = dev_labels["phases"].str.contains(args.phase, case=False, na=False)
-    dev_phase = dev_labels[phase_mask].copy()
+    # Also include excluded trials whose exclusion was not phase-related.
+    is_excluded_nonphase = dev_labels["label_value"].str.startswith("excluded_") & ~dev_labels["label_value"].str.contains("phase")
+    dev_phase = dev_labels[phase_mask | is_excluded_nonphase].copy()
     logger.info(
         "%s development labels: %d total\n%s",
         args.phase,
@@ -107,51 +111,55 @@ def main() -> None:
         dev_phase["label_value"].value_counts().to_string(),
     )
 
-    # ── Sample each bucket ──────────────────────────────────────────────
+    # ── Sample each bucket (v2 label types) ────────────────────────────
     advanced = dev_phase[dev_phase["label_value"] == "advanced"]
-    did_not = dev_phase[dev_phase["label_value"] == "did_not_advance"]
-    censored = dev_phase[dev_phase["label_value"] == "censored"]
+    hard_neg = dev_phase[dev_phase["label_value"] == "hard_negative"]
+    soft_neg = dev_phase[dev_phase["label_value"] == "soft_negative"]
+    censored_recent = dev_phase[dev_phase["label_value"] == "censored_recent"]
+    censored_in_prog = dev_phase[dev_phase["label_value"] == "censored_in_progress"]
+    censored_early = dev_phase[dev_phase["label_value"] == "censored_early_negative"]
+    excluded = dev_phase[dev_phase["label_value"].str.startswith("excluded_")]
 
+    # Allocate samples across buckets.
     n_pos = min(args.n_positive, len(advanced))
-    n_neg = min(args.n_negative, len(did_not))
-    n_cen = min(args.n_edge // 2, len(censored))
-    # Edge cases: censored + random low-confidence did_not_advance.
-    n_low_conf = args.n_edge - n_cen
+    n_hard = min(args.n_negative // 2, len(hard_neg))
+    n_soft = min(args.n_negative - n_hard, len(soft_neg))
+    n_edge_per = args.n_edge // 4  # split across 4 edge categories
 
     samples = []
 
     if n_pos > 0:
-        s = advanced.sample(n=n_pos, random_state=42)
-        s = s.copy()
+        s = advanced.sample(n=n_pos, random_state=42).copy()
         s["audit_bucket"] = "positive (advanced)"
         samples.append(s)
         logger.info("Sampled %d advanced (of %d available)", n_pos, len(advanced))
     else:
         logger.warning("No 'advanced' labels found for %s!", args.phase)
 
-    if n_neg > 0:
-        s = did_not.sample(n=n_neg, random_state=42)
-        s = s.copy()
-        s["audit_bucket"] = "negative (did_not_advance)"
+    if n_hard > 0:
+        s = hard_neg.sample(n=n_hard, random_state=42).copy()
+        s["audit_bucket"] = "negative (hard)"
         samples.append(s)
-        logger.info("Sampled %d did_not_advance (of %d available)", n_neg, len(did_not))
+        logger.info("Sampled %d hard_negative (of %d available)", n_hard, len(hard_neg))
 
-    if n_cen > 0:
-        s = censored.sample(n=n_cen, random_state=42)
-        s = s.copy()
-        s["audit_bucket"] = "edge (censored)"
+    if n_soft > 0:
+        s = soft_neg.sample(n=n_soft, random_state=42).copy()
+        s["audit_bucket"] = "negative (soft)"
         samples.append(s)
-        logger.info("Sampled %d censored (of %d available)", n_cen, len(censored))
+        logger.info("Sampled %d soft_negative (of %d available)", n_soft, len(soft_neg))
 
-    if n_low_conf > 0:
-        low_conf = did_not[did_not["label_confidence"] == "medium"]
-        n_lc = min(n_low_conf, len(low_conf))
-        if n_lc > 0:
-            s = low_conf.sample(n=n_lc, random_state=123)
-            s = s.copy()
-            s["audit_bucket"] = "edge (low-confidence negative)"
+    for name, bucket, label in [
+        ("censored_recent", censored_recent, "edge (censored_recent)"),
+        ("censored_in_progress", censored_in_prog, "edge (censored_in_progress)"),
+        ("censored_early_negative", censored_early, "edge (censored_early_negative)"),
+        ("excluded", excluded, "edge (excluded)"),
+    ]:
+        n = min(n_edge_per, len(bucket))
+        if n > 0:
+            s = bucket.sample(n=n, random_state=42).copy()
+            s["audit_bucket"] = label
             samples.append(s)
-            logger.info("Sampled %d low-confidence negatives", n_lc)
+            logger.info("Sampled %d %s (of %d available)", n, name, len(bucket))
 
     if not samples:
         logger.error("No samples generated — check phase filter and label data.")
