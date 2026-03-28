@@ -1,41 +1,53 @@
-# Development label configuration: v1
+# Development label configuration: v2 (revised after audit)
 
-version: "1.0"
+version: "2.0"
 
 primary_target: "phase_advancement"
 
-# Time window (months) after primary completion to check for advancement
+# Time window (months) after primary completion to check for advancement.
 advancement_window_months: 36
 
-# Phase advancement definitions
+# Phase advancement definitions.
 advancement_rules:
-  phase_1:
-    target_phases: ["Phase 2", "Phase 1/Phase 2", "Phase 2/Phase 3", "Phase 3"]
-  phase_1_2:
-    target_phases: ["Phase 2", "Phase 2/Phase 3", "Phase 3"]
   phase_2:
     target_phases: ["Phase 3", "Phase 2/Phase 3"]
-  phase_2_3:
-    target_phases: ["Phase 3"]
-  phase_3:
-    target_phases: []  # Regulatory approval is a separate label type
 
-# Matching strategy for linking trials across phases
+# Matching strategy for linking trials across phases.
 trial_linking:
   match_fields:
-    - "intervention_name"  # Normalized drug name
-    - "lead_sponsor"       # Same sponsor
-    - "condition"          # Same indication
+    - "intervention_name"
+    - "lead_sponsor"
+    - "condition"
   fuzzy_threshold: 0.85
+  # v2: require temporal ordering (successor first_post_date > anchor first_post_date).
+  require_temporal_ordering: true
 
-# Censoring policy
+# Censoring policy.
 censoring:
-  # Minimum follow-up time (months) required to label as "did_not_advance"
   min_followup_months: 36
-  # Trials with less follow-up than this are labeled "censored"
+  # v2 censoring splits:
+  #   soft_negative with < min_followup → censored_recent
+  #   hard_negative with < min_followup → censored_early_negative
+  #   in_progress status → censored_in_progress
 
-# Label values
+# Label values (v2 — expanded from v1).
 labels:
   positive: "advanced"
-  negative: "did_not_advance"
-  censored: "censored"
+  hard_negative: "hard_negative"
+  soft_negative: "soft_negative"
+  censored_recent: "censored_recent"
+  censored_in_progress: "censored_in_progress"
+  censored_early_negative: "censored_early_negative"
+
+# Eligibility (documented here, enforced in dev_eligibility.py).
+eligibility:
+  phase: "PHASE2"           # exact match, no mixed phases
+  primary_purpose: "TREATMENT"
+  excluded_designs:
+    - "PK/PD"
+    - "bioavailability"
+    - "formulation"
+    - "open-label extension"
+    - "long-term safety"
+    - "rollover"
+    - "mechanistic probe"
