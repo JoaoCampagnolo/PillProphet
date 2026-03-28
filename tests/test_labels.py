@@ -179,46 +179,46 @@ class TestDevEligibility:
     def test_exact_phase2_eligible(self):
         df = _make_df([_make_trial(phases="PHASE2")])
         result = assess_dev_eligibility(df)
-        assert result.iloc[0]["eligible"] is True
+        assert result.iloc[0]["eligible"] == True
 
     def test_mixed_phase_excluded(self):
         df = _make_df([_make_trial(phases="PHASE1; PHASE2")])
         result = assess_dev_eligibility(df)
-        assert result.iloc[0]["eligible"] is False
+        assert result.iloc[0]["eligible"] == False
         assert "mixed_phase" in result.iloc[0]["exclusion_reason"]
 
     def test_wrong_phase_excluded(self):
         df = _make_df([_make_trial(phases="PHASE3")])
         result = assess_dev_eligibility(df)
-        assert result.iloc[0]["eligible"] is False
+        assert result.iloc[0]["eligible"] == False
 
     def test_non_treatment_excluded(self):
         df = _make_df([_make_trial(primary_purpose="PREVENTION")])
         result = assess_dev_eligibility(df)
-        assert result.iloc[0]["eligible"] is False
+        assert result.iloc[0]["eligible"] == False
         assert "non_treatment" in result.iloc[0]["exclusion_reason"]
 
     def test_pk_study_excluded(self):
         df = _make_df([_make_trial(brief_title="Pharmacokinetic Study of DrugX in Healthy Volunteers")])
         result = assess_dev_eligibility(df)
-        assert result.iloc[0]["eligible"] is False
+        assert result.iloc[0]["eligible"] == False
         assert "pk_pd" in result.iloc[0]["exclusion_reason"]
 
     def test_extension_study_excluded(self):
         df = _make_df([_make_trial(brief_title="Open-Label Extension Study of DrugY")])
         result = assess_dev_eligibility(df)
-        assert result.iloc[0]["eligible"] is False
+        assert result.iloc[0]["eligible"] == False
         assert "extension" in result.iloc[0]["exclusion_reason"]
 
     def test_bioavailability_excluded(self):
         df = _make_df([_make_trial(brief_title="Bioavailability Study of DrugZ Tablets")])
         result = assess_dev_eligibility(df)
-        assert result.iloc[0]["eligible"] is False
+        assert result.iloc[0]["eligible"] == False
 
     def test_normal_treatment_study_eligible(self):
         df = _make_df([_make_trial(brief_title="Efficacy and Safety of DrugX in Asthma")])
         result = assess_dev_eligibility(df)
-        assert result.iloc[0]["eligible"] is True
+        assert result.iloc[0]["eligible"] == True
 
     def test_status_category_terminal(self):
         df = _make_df([_make_trial(overall_status="COMPLETED")])
