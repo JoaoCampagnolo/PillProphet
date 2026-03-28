@@ -40,7 +40,7 @@ categorical:
 numeric:
   - name: "enrollment"
     source_column: "enrollment"
-    time_availability: "T0"
+    time_availability: "T2"
     impute: "median"
     log_transform: true
   - name: "n_arms"

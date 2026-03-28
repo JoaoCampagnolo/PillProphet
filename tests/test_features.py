@@ -223,15 +223,23 @@ class TestFeatureRegistry:
                 f"Feature {entry.name!r} has invalid time_availability: {entry.time_availability!r}"
             )
 
-    def test_no_leakage_at_t0(self):
+    def test_enrollment_leaks_at_t0(self):
+        """Enrollment (actual count) is T2 — it must be flagged at T0."""
         registry = FeatureRegistry.from_configs(STRUCTURED_CONFIG, TEXT_CONFIG)
         leaking = registry.validate_for_timepoint("T0")
-        assert leaking == [], f"Features leaking at T0: {leaking}"
+        assert "enrollment" in leaking
 
-    def test_safe_features_returns_all_at_t0(self):
+    def test_no_leakage_at_t2(self):
+        """All features should be safe at T2 (enrollment becomes available)."""
+        registry = FeatureRegistry.from_configs(STRUCTURED_CONFIG, TEXT_CONFIG)
+        leaking = registry.validate_for_timepoint("T2")
+        assert leaking == [], f"Features leaking at T2: {leaking}"
+
+    def test_safe_features_excludes_enrollment_at_t0(self):
         registry = FeatureRegistry.from_configs(STRUCTURED_CONFIG, TEXT_CONFIG)
         safe = registry.safe_features("T0")
-        assert len(safe) == len(registry)
+        assert "enrollment" not in safe
+        assert len(safe) == len(registry) - 1
 
     def test_by_type(self):
         registry = FeatureRegistry.from_configs(STRUCTURED_CONFIG, TEXT_CONFIG)
