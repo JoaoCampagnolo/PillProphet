@@ -22,7 +22,7 @@ from pillprophet.utils.paths import CONFIGS_DIR, INTERIM_DIR, PROCESSED_DIR
 logger = setup_logging()
 
 DEFAULT_COHORT = INTERIM_DIR / "cohort"
-DEFAULT_STUDIES = PROCESSED_DIR / "studies.parquet"
+DEFAULT_STUDIES = INTERIM_DIR / "studies_v1_cohort.parquet"
 DEFAULT_DEV_CONFIG = CONFIGS_DIR / "labels" / "development_v1.yaml"
 
 
