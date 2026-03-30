@@ -49,6 +49,7 @@ _TITLE_EXCLUSION_RULES: list[tuple[str, list[str]]] = [
         r"\btherapeutic\s+equivalence\b",
     ]),
     ("nonprogression_design_extension", [
+        r"\bextension\s+study\b",
         r"\bopen[\s-]?label\s+extension\b",
         r"\blong[\s-]?term\s+(safety|extension|follow)",
         r"\brollover\b",

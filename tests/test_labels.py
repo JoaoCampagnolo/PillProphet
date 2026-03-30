@@ -256,6 +256,10 @@ class TestTitleExclusion:
     def test_formulation_pattern(self):
         assert _check_title_exclusion("Formulation Study of DrugZ") is not None
 
+    def test_extension_study_standalone(self):
+        """v3.1: 'Extension Study' without 'open-label' prefix should be caught."""
+        assert _check_title_exclusion("Extension Study for Long Term Evaluation of DrugY") is not None
+
     def test_normal_title_passes(self):
         assert _check_title_exclusion("Efficacy of DrugX in Type 2 Diabetes") is None
 
@@ -303,6 +307,29 @@ class TestPositiveStopOverride:
 
     def test_sponsor_decision_not_positive(self):
         assert _is_positive_terminal("Sponsor decision") is False
+
+    def test_futility_blocks_positive(self):
+        """v3.1: futility hard blocker — even if positive phrases are present."""
+        assert _is_positive_terminal(
+            "futility interim analysis indicated a low probability to confer "
+            "a clinically meaningful improvement in proteinuria"
+        ) is False
+
+    def test_low_probability_negation(self):
+        """v3.1: 'low probability to confer' is a negation prefix."""
+        assert _is_positive_terminal(
+            "low probability to confer a clinically meaningful reduction"
+        ) is False
+
+    def test_did_not_meet_primary_endpoint_blocks(self):
+        assert _is_positive_terminal(
+            "The study did not meet its primary endpoint"
+        ) is False
+
+    def test_primary_endpoint_not_met_blocks(self):
+        assert _is_positive_terminal(
+            "Primary endpoint was not achieved; clinically meaningful improvement not observed"
+        ) is False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -358,6 +385,12 @@ class TestTerminalNegativeClassification:
 
     def test_funding_ended_is_hard(self):
         row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "Funding ended"})
+        label, _, _ = _classify_terminal_negative(row)
+        assert label == "hard_negative"
+
+    def test_bare_enrollment_is_hard(self):
+        """v3.1: bare 'enrollment' as sole reason = recruitment failure."""
+        row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "enrollment"})
         label, _, _ = _classify_terminal_negative(row)
         assert label == "hard_negative"
 
