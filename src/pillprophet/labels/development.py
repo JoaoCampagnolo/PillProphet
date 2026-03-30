@@ -5,15 +5,23 @@ look across the full studies table to find a plausible *successor* trial
 — one run by the same sponsor, for the same (or very similar) intervention
 and condition, at a later phase, started within the configured time window.
 
-Label values (v2 revised policy):
+Label values (v3 revised policy):
 - ``advanced``                   — valid successor found
-- ``hard_negative``              — terminal + explicit negative reason, no successor
-- ``soft_negative``              — terminal/completed, sufficient follow-up, no successor
+- ``excluded_positive_terminal`` — terminated with explicitly positive stop reason
+- ``hard_negative``              — terminal + explicit negative evidence, no successor
+- ``ambiguous_negative``         — terminal but vague/missing stop reason, no successor
+- ``soft_negative``              — completed, sufficient follow-up, no successor
 - ``censored_recent``            — insufficient follow-up, genuinely unresolved
 - ``censored_in_progress``       — ongoing / active, not yet terminal
 - ``censored_early_negative``    — terminated/withdrawn early with negative reason,
                                    but below follow-up threshold
 - ``excluded_*``                 — ineligible for the dev task (from dev_eligibility)
+
+Soft-negative diagnostic flags (stored as metadata, not exclusion):
+- ``lifecycle_flag``             — title suggests lifecycle / expansion study
+- ``broad_basket_flag``          — broad/basket oncology or multi-disease study
+- ``supportive_flag``            — supportive/procedural/adjunctive study
+- ``common_asset_flag``          — intervention appears in many trials in cohort
 """
 
 from __future__ import annotations
@@ -107,50 +115,243 @@ def _fuzzy_match(a: str | None, b: str | None, threshold: float) -> bool:
     return False
 
 
-# ── Hard negative classification ────────────────────────────────────────────
-
-# Keywords in why_stopped that indicate explicit negative evidence.
-_HARD_NEGATIVE_KEYWORDS = [
-    "efficacy", "futility", "futile",
-    "safety", "toxicity", "adverse", "dlt", "dose.limiting",
-    "lack of", "insufficient",
-    "portfolio", "reprioritiz", "strategic", "business decision",
-    "sponsor decision", "discontinued",
-]
+# ── Positive-stop override (v3) ───────────────────────────────────────────
+# Trials terminated because they *succeeded* must not be labeled negative.
+# The lexicon is checked BEFORE negative classification.
+# Negation patterns prevent false triggers like "no clinically meaningful benefit".
 
 import re as _re
-_HARD_NEGATIVE_RE = _re.compile(
-    "|".join(f"(?:{kw})" for kw in _HARD_NEGATIVE_KEYWORDS),
+
+_POSITIVE_STOP_PHRASES = [
+    r"clinically\s+meaningful\s+(?:improvement|reduction|benefit|response|efficacy)",
+    r"study\s+(?:goal|objective)\s+(?:achieved|met|reached)",
+    r"efficacy\s+(?:observed|achieved|demonstrated|established|confirmed)",
+    r"benefit\s+demonstrated",
+    r"primary\s+(?:endpoint|objective)\s+(?:met|achieved|reached)",
+    r"positive\s+(?:interim|efficacy)\s+(?:results?|data|findings?|analysis)",
+    r"superiority\s+(?:demonstrated|shown|established)",
+    r"met\s+(?:its|the)\s+primary\s+(?:endpoint|objective)",
+]
+
+_NEGATION_PREFIXES = [
+    r"no\s+",
+    r"not?\s+",
+    r"lack\s+of\s+",
+    r"insufficient\s+",
+    r"failed\s+to\s+(?:show|demonstrate|achieve|meet)\s+",
+    r"did\s+not\s+(?:show|demonstrate|achieve|meet)\s+",
+    r"without\s+",
+    r"absence\s+of\s+",
+]
+
+_POSITIVE_STOP_RE = _re.compile(
+    "|".join(f"(?:{p})" for p in _POSITIVE_STOP_PHRASES),
     _re.IGNORECASE,
 )
+_NEGATION_RE = _re.compile(
+    "|".join(f"(?:{p})" for p in _NEGATION_PREFIXES),
+    _re.IGNORECASE,
+)
+
+
+def _is_positive_terminal(why_stopped: str | None) -> bool:
+    """Return True if why_stopped describes a positive outcome.
+
+    Handles negation: "no clinically meaningful benefit" → False.
+    """
+    if not isinstance(why_stopped, str) or not why_stopped.strip():
+        return False
+    text = why_stopped.strip()
+
+    match = _POSITIVE_STOP_RE.search(text)
+    if not match:
+        return False
+
+    # Check for negation in the ~40 chars before the match.
+    start = max(0, match.start() - 40)
+    prefix = text[start:match.start()]
+    if _NEGATION_RE.search(prefix):
+        return False
+
+    return True
+
+
+# ── Hard negative classification (v3: explicit vs ambiguous) ──────────────
+
+# Keywords indicating *explicit negative evidence* in why_stopped.
+_EXPLICIT_NEGATIVE_KEYWORDS = [
+    r"lack\s+of\s+efficacy", r"insufficient\s+efficacy",
+    r"futility", r"futile",
+    r"safety", r"toxicity", r"adverse", r"dlt", r"dose.limiting",
+    r"lack\s+of", r"insufficient",
+    r"no\s+(?:clinical\s+)?benefit", r"did\s+not\s+meet",
+    r"failed\s+to\s+(?:meet|demonstrate|show)",
+    r"negative\s+(?:result|outcome|finding)",
+    r"recruitment\s+failure", r"low\s+(?:enrollment|accrual|recruitment)",
+    r"no\s+enrollment", r"unable\s+to\s+enroll",
+    r"program\s+(?:terminated|discontinued|closed)",
+    r"funding\s+(?:ended|withdrawn|unavailable|lost)",
+    r"(?:company|sponsor)\s+(?:closed|bankrupt|dissolved)",
+]
+
+_EXPLICIT_NEGATIVE_RE = _re.compile(
+    "|".join(f"(?:{kw})" for kw in _EXPLICIT_NEGATIVE_KEYWORDS),
+    _re.IGNORECASE,
+)
+
+
+def _classify_terminal_negative(row: pd.Series) -> tuple[str, str, str]:
+    """Classify a terminal non-advanced trial into hard_negative or ambiguous_negative.
+
+    Returns (label_value, confidence, evidence_source).
+    """
+    status = str(row.get("overall_status", "") or "").upper()
+    why = row.get("why_stopped")
+    has_reason = isinstance(why, str) and why.strip()
+
+    if has_reason:
+        why_text = why.strip()
+        if _EXPLICIT_NEGATIVE_RE.search(why_text):
+            return (
+                "hard_negative",
+                "high",
+                f"explicit_negative: {why_text[:100]}",
+            )
+        # Has a reason but it's vague (e.g., "sponsor decision", "business decision").
+        return (
+            "ambiguous_negative",
+            "low",
+            f"vague_terminal_reason: {why_text[:100]}",
+        )
+
+    # No reason given.
+    if status == "TERMINATED":
+        return (
+            "ambiguous_negative",
+            "low",
+            "terminated_no_reason",
+        )
+    if status == "WITHDRAWN":
+        return (
+            "ambiguous_negative",
+            "low",
+            "withdrawn_no_reason",
+        )
+    # Fallback (shouldn't reach here for terminal trials).
+    return ("ambiguous_negative", "low", f"terminal_unknown: {status}")
 
 
 def _is_hard_negative(row: pd.Series) -> bool:
     """Return True if the trial has explicit negative evidence.
 
-    A trial is a hard negative if:
-    - terminated/withdrawn AND has a why_stopped reason matching negative keywords
-    - OR terminated (not completed) — termination itself is negative evidence
+    v3: only True for trials with *explicit* negative keywords.
+    Trials with vague reasons or no reason are ambiguous_negative instead.
     """
     status = str(row.get("overall_status", "") or "").upper()
-
-    if status in ("TERMINATED", "WITHDRAWN"):
-        why = row.get("why_stopped")
-        if isinstance(why, str) and why.strip():
-            return True  # Any explicit reason on a terminated trial is strong evidence
-        if status == "TERMINATED":
-            return True  # Termination without reason is still negative signal
+    if status not in ("TERMINATED", "WITHDRAWN"):
+        return False
+    why = row.get("why_stopped")
+    if isinstance(why, str) and why.strip():
+        return bool(_EXPLICIT_NEGATIVE_RE.search(why.strip()))
     return False
 
 
-def _classify_hard_negative_reason(row: pd.Series) -> str:
-    """Return a reason string for the hard negative."""
-    why = row.get("why_stopped")
-    if isinstance(why, str) and why.strip():
-        if _HARD_NEGATIVE_RE.search(why):
-            return f"explicit_negative: {why.strip()[:100]}"
-        return f"terminated_with_reason: {why.strip()[:100]}"
-    return "terminated_no_reason"
+# ── Soft-negative diagnostic flags (v3) ────────────────────────────────────
+# These are metadata flags, NOT exclusion rules. They enable sensitivity
+# analysis during modeling but do not auto-exclude.
+
+_LIFECYCLE_PATTERNS = _re.compile(
+    r"|".join([
+        r"\bpediatric\b", r"\badolescent\b", r"\bchildren\b", r"\bneonat",
+        r"\bage\s+expansion\b",
+        r"\bdose\s+comparison\b", r"\bdose\s+adjustment\b",
+        r"\badditional\s+dose\b", r"\bdose\s+sequencing\b",
+        r"\bmaintenance\s+(?:therapy|treatment|study)\b",
+        r"\bsubstitution\s+(?:study|trial)\b",
+        r"\badd[\s-]?on\s+(?:to|therapy)\b", r"\badjunct(?:ive)?\s+(?:to|therapy)\b",
+        r"\bvirologically\s+suppressed\b",
+        r"\bswitch(?:ing)?\s+(?:from|to|study)\b",
+    ]),
+    _re.IGNORECASE,
+)
+
+_BROAD_BASKET_PATTERNS = _re.compile(
+    r"|".join([
+        r"\badvanced\s+(?:solid\s+)?tumou?rs?\b",
+        r"\bsolid\s+tumou?rs?\b",
+        r"\bmultiple\s+tumou?r\s+types?\b",
+        r"\bbasket\s+(?:study|trial)\b",
+        r"\bplatform\s+(?:study|trial)\b",
+        r"\bcancers?\s+that\s+(?:are|have)\b",
+        r"\bvarious\s+cancers?\b",
+        r"\bneoplasms?\b",
+        r"\brefractory\s+(?:solid\s+)?tumou?rs?\b",
+    ]),
+    _re.IGNORECASE,
+)
+
+_SUPPORTIVE_PATTERNS = _re.compile(
+    r"|".join([
+        r"\bpost[\s-]?(?:tooth|dental)\s+extraction\b",
+        r"\bperi[\s-]?operative\b", r"\bintra[\s-]?operative\b",
+        r"\bduring\s+(?:surgery|replacement|procedure)\b",
+        r"\bhaemostati[cs]\b", r"\bhemostati[cs]\b",
+        r"\bsymptomatic\s+(?:treatment|relief|management)\b",
+        r"\bpain\s+(?:after|following)\s+(?:surgery|procedure)\b",
+        r"\bantiemetic\b", r"\banti[\s-]?nausea\b",
+        r"\bprophylaxis\s+(?:of|for|against)\b",
+    ]),
+    _re.IGNORECASE,
+)
+
+
+def _compute_soft_negative_flags(
+    row: pd.Series,
+    intervention_counts: dict[str, int] | None = None,
+    common_asset_threshold: int = 10,
+) -> dict[str, bool]:
+    """Compute diagnostic flags for a soft-negative trial.
+
+    Returns a dict of boolean flags. All default to False.
+    """
+    title = str(row.get("brief_title", "") or "")
+    conditions = str(row.get("conditions", "") or "")
+
+    flags = {
+        "lifecycle_flag": bool(_LIFECYCLE_PATTERNS.search(title)),
+        "broad_basket_flag": bool(
+            _BROAD_BASKET_PATTERNS.search(title)
+            or _BROAD_BASKET_PATTERNS.search(conditions)
+        ),
+        "supportive_flag": bool(_SUPPORTIVE_PATTERNS.search(title)),
+        "common_asset_flag": False,
+    }
+
+    if intervention_counts is not None:
+        interventions = str(row.get("intervention_names", "") or "")
+        for drug in interventions.split(";"):
+            drug = drug.strip().lower()
+            if drug and intervention_counts.get(drug, 0) >= common_asset_threshold:
+                flags["common_asset_flag"] = True
+                break
+
+    return flags
+
+
+def _build_intervention_counts(all_trials_df: pd.DataFrame) -> dict[str, int]:
+    """Count how many trials each intervention name appears in (lowercased)."""
+    counts: dict[str, int] = {}
+    col = all_trials_df.get("intervention_names")
+    if col is None:
+        return counts
+    for names in col.dropna():
+        seen: set[str] = set()
+        for drug in str(names).split(";"):
+            drug = drug.strip().lower()
+            if drug and drug not in seen:
+                seen.add(drug)
+                counts[drug] = counts.get(drug, 0) + 1
+    return counts
 
 
 # ── Successor search (stricter v2) ─────────────────────────────────────────
@@ -207,7 +408,7 @@ def find_successor_trials(
         & (all_trials_df.index != nct_id)
     ]
 
-    matches: list[str] = []
+    matches: list[dict] = []
 
     for cand_id, cand in candidates.iterrows():
         # 1. Later phase?
@@ -240,10 +441,30 @@ def find_successor_trials(
             if cand_first_post is not None and cand_first_post < src_first_post:
                 continue  # Successor registered before anchor — suspicious
 
-        matches.append(cand_id)
+        # Compute match metadata for this candidate.
+        cand_cond_overlap = len(src_conditions & cand_conds) / max(len(src_conditions | cand_conds), 1)
+        cand_interv_sim = SequenceMatcher(
+            None,
+            (src_interventions or "").lower(),
+            (cand_interventions or "").lower(),
+        ).ratio()
+        temporal_gap_months = round(delta_days / 30.44, 1)
+
+        matches.append({
+            "nct_id": cand_id,
+            "successor_phase": cand.get("phases"),
+            "temporal_gap_months": temporal_gap_months,
+            "condition_overlap": round(cand_cond_overlap, 3),
+            "intervention_similarity": round(cand_interv_sim, 3),
+        })
 
     if matches:
-        return all_trials_df.loc[matches]
+        result = all_trials_df.loc[[m["nct_id"] for m in matches]].copy()
+        # Attach match metadata.
+        meta_df = pd.DataFrame(matches).set_index("nct_id")
+        for col in meta_df.columns:
+            result[f"_match_{col}"] = meta_df[col]
+        return result
     return pd.DataFrame()
 
 
@@ -255,6 +476,7 @@ def assign_development_label(
     all_trials_df: pd.DataFrame,
     config: dict,
     status_category: str,
+    intervention_counts: dict[str, int] | None = None,
 ) -> dict:
     """Assign a development label to a single eligible trial.
 
@@ -265,6 +487,7 @@ def assign_development_label(
     all_trials_df : full studies table for cross-trial linkage.
     config : development label config dict.
     status_category : from dev_eligibility (``terminal``, ``in_progress``, ``conditional``).
+    intervention_counts : pre-computed drug→trial-count map for common-asset flagging.
 
     Returns
     -------
@@ -282,11 +505,38 @@ def assign_development_label(
             "notes": "Ongoing trial, not yet terminal",
         }
 
+    # v3: positive-stop override — check BEFORE successor search.
+    # A trial terminated for positive reasons is not a valid negative,
+    # but we also can't confirm advancement without a successor.
+    why_stopped = trial_row.get("why_stopped")
+    if _is_positive_terminal(why_stopped):
+        return {
+            "nct_id": nct_id,
+            "label_type": "development",
+            "label_value": "excluded_positive_terminal",
+            "label_date": None,
+            "label_confidence": "medium",
+            "evidence_source": f"positive_stop: {str(why_stopped).strip()[:100]}",
+            "notes": "Terminated with positive outcome — neither positive nor negative for modeling",
+        }
+
     # Search for successors.
     successors = find_successor_trials(nct_id, trial_row, all_trials_df, config)
 
     if not successors.empty:
         best = successors.iloc[0]
+        # v3: store match metadata for downstream analysis.
+        match_meta = {}
+        for col in best.index:
+            if col.startswith("_match_"):
+                match_meta[col[7:]] = best[col]  # strip "_match_" prefix
+        notes_parts = [f"{len(successors)} successor(s) found"]
+        if match_meta:
+            notes_parts.append(
+                f"gap={match_meta.get('temporal_gap_months')}mo, "
+                f"cond_overlap={match_meta.get('condition_overlap')}, "
+                f"interv_sim={match_meta.get('intervention_similarity')}"
+            )
         return {
             "nct_id": nct_id,
             "label_type": "development",
@@ -297,32 +547,44 @@ def assign_development_label(
                 f"successor={best.name}, phase={best.get('phases')}, "
                 f"sponsor={best.get('lead_sponsor')}"
             ),
-            "notes": f"{len(successors)} successor(s) found",
+            "notes": "; ".join(notes_parts),
+            # Match metadata columns (will become extra columns in the DataFrame).
+            "successor_phase": match_meta.get("successor_phase"),
+            "temporal_gap_months": match_meta.get("temporal_gap_months"),
+            "condition_overlap": match_meta.get("condition_overlap"),
+            "intervention_similarity": match_meta.get("intervention_similarity"),
         }
 
     # No successor found — classify negative type.
-    if _is_hard_negative(trial_row):
-        reason = _classify_hard_negative_reason(trial_row)
+    status = str(trial_row.get("overall_status", "") or "").upper()
+
+    if status in ("TERMINATED", "WITHDRAWN"):
+        label_value, confidence, evidence = _classify_terminal_negative(trial_row)
         return {
             "nct_id": nct_id,
             "label_type": "development",
-            "label_value": "hard_negative",
+            "label_value": label_value,
             "label_date": None,
-            "label_confidence": "high",
-            "evidence_source": reason,
+            "label_confidence": confidence,
+            "evidence_source": evidence,
             "notes": f"why_stopped: {trial_row.get('why_stopped')}",
         }
 
-    # Soft negative (will be subject to censoring check downstream).
-    return {
+    # Completed with no successor → soft negative (subject to censoring + flags).
+    flags = _compute_soft_negative_flags(trial_row, intervention_counts)
+    flag_str = ", ".join(k for k, v in flags.items() if v) or "none"
+    rec = {
         "nct_id": nct_id,
         "label_type": "development",
         "label_value": "soft_negative",
         "label_date": None,
         "label_confidence": "medium",
         "evidence_source": "no successor trial found",
-        "notes": None,
+        "notes": f"diagnostic_flags: {flag_str}",
     }
+    # Store flags as extra columns.
+    rec.update(flags)
+    return rec
 
 
 # ── Cohort-level builder (v2) ──────────────────────────────────────────────
@@ -354,6 +616,9 @@ def build_development_labels(
     censoring_cfg = config.get("censoring", {})
     min_followup = censoring_cfg.get("min_followup_months", 36)
 
+    # Step 0: Pre-compute intervention counts for common-asset flagging.
+    intervention_counts = _build_intervention_counts(all_trials_df)
+
     # Step 1: Assess eligibility.
     eligibility = assess_dev_eligibility(cohort_df)
 
@@ -380,6 +645,7 @@ def build_development_labels(
 
         rec = assign_development_label(
             nct_id, trial_row, all_trials_df, config, status_cat,
+            intervention_counts=intervention_counts,
         )
         records.append(rec)
 
@@ -405,11 +671,12 @@ def _apply_v2_censoring(
     min_followup_months: int = 36,
     reference_date: datetime | None = None,
 ) -> pd.DataFrame:
-    """Apply censoring with v2 split: censored_recent vs censored_early_negative.
+    """Apply censoring with v3 split: censored_recent vs censored_early_negative.
 
     - ``soft_negative`` with insufficient follow-up → ``censored_recent``
     - ``hard_negative`` with insufficient follow-up → ``censored_early_negative``
-      (keep separate — the negative signal is real but the trial is young)
+    - ``ambiguous_negative`` with insufficient follow-up → ``censored_recent``
+      (ambiguous negatives get same treatment as soft negatives for censoring)
     """
     from pillprophet.labels.censoring import compute_followup_months
 
@@ -430,9 +697,9 @@ def _apply_v2_censoring(
 
     labels_df["followup_months"] = labels_df["nct_id"].map(followups)
 
-    # Censor soft negatives with short follow-up.
+    # Censor soft negatives and ambiguous negatives with short follow-up.
     soft_censor_mask = (
-        (labels_df["label_value"] == "soft_negative")
+        (labels_df["label_value"].isin(("soft_negative", "ambiguous_negative")))
         & (
             labels_df["followup_months"].isna()
             | (labels_df["followup_months"] < min_followup_months)
