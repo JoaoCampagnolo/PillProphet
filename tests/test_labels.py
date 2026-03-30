@@ -1,4 +1,4 @@
-"""Tests for label assignment: operational, development (v2), eligibility, factory."""
+"""Tests for label assignment: operational, development (v3), eligibility, factory."""
 
 from __future__ import annotations
 
@@ -20,8 +20,19 @@ from pillprophet.labels.development import (
     assign_development_label,
     find_successor_trials,
     _is_hard_negative,
+    _is_positive_terminal,
+    _classify_terminal_negative,
+    _compute_soft_negative_flags,
+    _build_intervention_counts,
 )
-from pillprophet.labels.label_factory import LABEL_COLUMNS, build_all_labels
+from pillprophet.labels.label_factory import (
+    LABEL_COLUMNS,
+    MODELING_POSITIVES,
+    MODELING_NEGATIVES_STRICT,
+    MODELING_NEGATIVES_INTERMEDIATE,
+    MODELING_NEGATIVES_BROAD,
+    build_all_labels,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +77,7 @@ def _make_df(trials: list[dict], id_prefix: str = "NCT") -> pd.DataFrame:
 def dev_config() -> dict:
     """Minimal development label config."""
     return {
-        "version": "2.0",
+        "version": "3.0",
         "primary_target": "phase_advancement",
         "advancement_window_months": 36,
         "advancement_rules": {
@@ -81,6 +92,7 @@ def dev_config() -> dict:
         "labels": {
             "positive": "advanced",
             "hard_negative": "hard_negative",
+            "ambiguous_negative": "ambiguous_negative",
             "soft_negative": "soft_negative",
         },
     }
@@ -252,25 +264,127 @@ class TestTitleExclusion:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# HARD NEGATIVE CLASSIFICATION
+# POSITIVE-STOP OVERRIDE (v3)
 # ═══════════════════════════════════════════════════════════════════════════
 
-class TestHardNegative:
-    def test_terminated_with_reason_is_hard(self):
+class TestPositiveStopOverride:
+    def test_clinically_meaningful_improvement(self):
+        assert _is_positive_terminal(
+            "Study terminated after identifying a clinically meaningful reduction in proteinuria"
+        ) is True
+
+    def test_study_objective_met(self):
+        assert _is_positive_terminal("Terminated: study objective achieved") is True
+
+    def test_efficacy_demonstrated(self):
+        assert _is_positive_terminal("Early stop: efficacy demonstrated in interim analysis") is True
+
+    def test_primary_endpoint_met(self):
+        assert _is_positive_terminal("Trial stopped early as it met its primary endpoint") is True
+
+    def test_negation_blocks_positive(self):
+        """'No clinically meaningful benefit' should NOT be positive."""
+        assert _is_positive_terminal("No clinically meaningful improvement observed") is False
+
+    def test_failed_to_demonstrate_blocks(self):
+        assert _is_positive_terminal("Failed to demonstrate clinically meaningful efficacy") is False
+
+    def test_lack_of_efficacy_not_positive(self):
+        assert _is_positive_terminal("Lack of efficacy") is False
+
+    def test_none_returns_false(self):
+        assert _is_positive_terminal(None) is False
+
+    def test_empty_returns_false(self):
+        assert _is_positive_terminal("") is False
+
+    def test_plain_negative_reason_not_positive(self):
+        assert _is_positive_terminal("Safety concerns") is False
+
+    def test_sponsor_decision_not_positive(self):
+        assert _is_positive_terminal("Sponsor decision") is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# HARD NEGATIVE / AMBIGUOUS NEGATIVE CLASSIFICATION (v3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestTerminalNegativeClassification:
+    def test_explicit_negative_is_hard(self):
+        row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "Lack of efficacy"})
+        label, conf, _ = _classify_terminal_negative(row)
+        assert label == "hard_negative"
+        assert conf == "high"
+
+    def test_safety_is_hard(self):
+        row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "Safety concerns identified"})
+        label, conf, _ = _classify_terminal_negative(row)
+        assert label == "hard_negative"
+        assert conf == "high"
+
+    def test_futility_is_hard(self):
+        row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "Futility analysis"})
+        label, _, _ = _classify_terminal_negative(row)
+        assert label == "hard_negative"
+
+    def test_sponsor_decision_is_ambiguous(self):
+        row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "Sponsor decision"})
+        label, conf, _ = _classify_terminal_negative(row)
+        assert label == "ambiguous_negative"
+        assert conf == "low"
+
+    def test_business_decision_is_ambiguous(self):
+        row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "Business decision"})
+        label, conf, _ = _classify_terminal_negative(row)
+        assert label == "ambiguous_negative"
+        assert conf == "low"
+
+    def test_terminated_no_reason_is_ambiguous(self):
+        row = pd.Series({"overall_status": "TERMINATED", "why_stopped": None})
+        label, conf, _ = _classify_terminal_negative(row)
+        assert label == "ambiguous_negative"
+        assert conf == "low"
+
+    def test_withdrawn_no_reason_is_ambiguous(self):
+        row = pd.Series({"overall_status": "WITHDRAWN", "why_stopped": None})
+        label, conf, _ = _classify_terminal_negative(row)
+        assert label == "ambiguous_negative"
+        assert conf == "low"
+
+    def test_recruitment_failure_is_hard(self):
+        row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "Low enrollment"})
+        label, _, _ = _classify_terminal_negative(row)
+        assert label == "hard_negative"
+
+    def test_funding_ended_is_hard(self):
+        row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "Funding ended"})
+        label, _, _ = _classify_terminal_negative(row)
+        assert label == "hard_negative"
+
+
+class TestIsHardNegative:
+    """v3: _is_hard_negative only returns True for explicit negative evidence."""
+
+    def test_terminated_with_explicit_reason_is_hard(self):
         row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "Lack of efficacy"})
         assert _is_hard_negative(row) is True
 
-    def test_terminated_no_reason_is_hard(self):
+    def test_terminated_no_reason_is_not_hard(self):
+        """v3 change: terminated without reason is now ambiguous, not hard."""
         row = pd.Series({"overall_status": "TERMINATED", "why_stopped": None})
-        assert _is_hard_negative(row) is True
+        assert _is_hard_negative(row) is False
 
-    def test_withdrawn_with_reason_is_hard(self):
-        row = pd.Series({"overall_status": "WITHDRAWN", "why_stopped": "Portfolio reprioritization"})
-        assert _is_hard_negative(row) is True
+    def test_terminated_vague_reason_is_not_hard(self):
+        row = pd.Series({"overall_status": "TERMINATED", "why_stopped": "Sponsor decision"})
+        assert _is_hard_negative(row) is False
 
     def test_completed_is_not_hard(self):
         row = pd.Series({"overall_status": "COMPLETED", "why_stopped": None})
         assert _is_hard_negative(row) is False
+
+    def test_withdrawn_with_explicit_reason_is_hard(self):
+        row = pd.Series({"overall_status": "WITHDRAWN", "why_stopped": "Safety concerns"})
+        assert _is_hard_negative(row) is True
 
     def test_withdrawn_no_reason_is_not_hard(self):
         row = pd.Series({"overall_status": "WITHDRAWN", "why_stopped": None})
@@ -278,7 +392,109 @@ class TestHardNegative:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# DEVELOPMENT LABELS (v2)
+# SOFT-NEGATIVE DIAGNOSTIC FLAGS (v3)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestSoftNegativeFlags:
+    def test_lifecycle_flag_pediatric(self):
+        row = pd.Series({
+            "brief_title": "Efficacy of DrugX in Pediatric Asthma",
+            "conditions": "Asthma",
+            "intervention_names": "DrugX",
+        })
+        flags = _compute_soft_negative_flags(row)
+        assert flags["lifecycle_flag"] is True
+
+    def test_lifecycle_flag_maintenance(self):
+        row = pd.Series({
+            "brief_title": "Maintenance Therapy With DrugY in COPD",
+            "conditions": "COPD",
+            "intervention_names": "DrugY",
+        })
+        flags = _compute_soft_negative_flags(row)
+        assert flags["lifecycle_flag"] is True
+
+    def test_broad_basket_flag(self):
+        row = pd.Series({
+            "brief_title": "DrugZ in Advanced Solid Tumors",
+            "conditions": "Solid Tumors",
+            "intervention_names": "DrugZ",
+        })
+        flags = _compute_soft_negative_flags(row)
+        assert flags["broad_basket_flag"] is True
+
+    def test_broad_basket_from_conditions(self):
+        row = pd.Series({
+            "brief_title": "DrugZ Phase 2 Study",
+            "conditions": "Neoplasms",
+            "intervention_names": "DrugZ",
+        })
+        flags = _compute_soft_negative_flags(row)
+        assert flags["broad_basket_flag"] is True
+
+    def test_supportive_flag(self):
+        row = pd.Series({
+            "brief_title": "DrugA for Pain After Dental Surgery",
+            "conditions": "Post-Surgical Pain",
+            "intervention_names": "DrugA",
+        })
+        flags = _compute_soft_negative_flags(row)
+        assert flags["supportive_flag"] is False  # "dental surgery" not "dental extraction"
+
+    def test_supportive_flag_perioperative(self):
+        row = pd.Series({
+            "brief_title": "DrugB Peri-operative Use in Cardiac Surgery",
+            "conditions": "Cardiac Surgery",
+            "intervention_names": "DrugB",
+        })
+        flags = _compute_soft_negative_flags(row)
+        assert flags["supportive_flag"] is True
+
+    def test_common_asset_flag(self):
+        row = pd.Series({
+            "brief_title": "Metformin in Type 2 Diabetes",
+            "conditions": "Type 2 Diabetes",
+            "intervention_names": "metformin",
+        })
+        counts = {"metformin": 15, "drugx": 2}
+        flags = _compute_soft_negative_flags(row, intervention_counts=counts)
+        assert flags["common_asset_flag"] is True
+
+    def test_common_asset_flag_below_threshold(self):
+        row = pd.Series({
+            "brief_title": "Novel DrugX in Cancer",
+            "conditions": "Cancer",
+            "intervention_names": "DrugX",
+        })
+        counts = {"drugx": 3}
+        flags = _compute_soft_negative_flags(row, intervention_counts=counts)
+        assert flags["common_asset_flag"] is False
+
+    def test_no_flags_normal_trial(self):
+        row = pd.Series({
+            "brief_title": "Efficacy and Safety of DrugX in Asthma",
+            "conditions": "Asthma",
+            "intervention_names": "DrugX",
+        })
+        flags = _compute_soft_negative_flags(row)
+        assert not any(flags.values())
+
+
+class TestBuildInterventionCounts:
+    def test_counts_unique_per_trial(self):
+        df = _make_df([
+            _make_trial(intervention_names="DrugA; DrugB"),
+            _make_trial(intervention_names="DrugA; DrugC"),
+            _make_trial(intervention_names="DrugB"),
+        ])
+        counts = _build_intervention_counts(df)
+        assert counts["druga"] == 2
+        assert counts["drugb"] == 2
+        assert counts["drugc"] == 1
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# DEVELOPMENT LABELS (v3)
 # ═══════════════════════════════════════════════════════════════════════════
 
 class TestFindSuccessorTrials:
@@ -306,6 +522,35 @@ class TestFindSuccessorTrials:
             source_id, all_df.loc[source_id], all_df, dev_config,
         )
         assert len(result) == 1
+
+    def test_successor_has_match_metadata(self, dev_config):
+        """v3: successor results should include match metadata."""
+        source = _make_trial(
+            phases="PHASE2",
+            lead_sponsor="Acme Pharma",
+            intervention_names="DrugX",
+            conditions="Lung Cancer",
+            primary_completion_date="2021-06-01",
+            first_post_date="2019-01-01",
+        )
+        successor = _make_trial(
+            phases="PHASE3",
+            lead_sponsor="Acme Pharma",
+            intervention_names="DrugX",
+            conditions="Lung Cancer",
+            start_date="2022-03-01",
+            first_post_date="2021-09-01",
+        )
+        all_df = _make_df([source, successor])
+        source_id = all_df.index[0]
+
+        result = find_successor_trials(
+            source_id, all_df.loc[source_id], all_df, dev_config,
+        )
+        assert "_match_successor_phase" in result.columns
+        assert "_match_temporal_gap_months" in result.columns
+        assert "_match_condition_overlap" in result.columns
+        assert "_match_intervention_similarity" in result.columns
 
     def test_no_successor_different_sponsor(self, dev_config):
         source = _make_trial(
@@ -408,7 +653,7 @@ class TestFindSuccessorTrials:
         assert len(result) == 0
 
     def test_temporal_ordering_rejects_older_successor(self, dev_config):
-        """v2: successor registered BEFORE anchor should be rejected."""
+        """v2+: successor registered BEFORE anchor should be rejected."""
         source = _make_trial(
             phases="PHASE2",
             lead_sponsor="Acme",
@@ -461,7 +706,36 @@ class TestAssignDevelopmentLabel:
         assert rec["label_value"] == "advanced"
         assert rec["label_confidence"] == "high"
 
-    def test_hard_negative_label(self, dev_config):
+    def test_advanced_has_match_metadata(self, dev_config):
+        """v3: advanced label should contain match metadata."""
+        source = _make_trial(
+            phases="PHASE2",
+            lead_sponsor="Acme",
+            intervention_names="DrugX",
+            conditions="Cancer",
+            primary_completion_date="2021-06-01",
+            first_post_date="2019-01-01",
+        )
+        successor = _make_trial(
+            phases="PHASE3",
+            lead_sponsor="Acme",
+            intervention_names="DrugX",
+            conditions="Cancer",
+            start_date="2022-03-01",
+            first_post_date="2021-09-01",
+        )
+        all_df = _make_df([source, successor])
+        source_id = all_df.index[0]
+
+        rec = assign_development_label(
+            source_id, all_df.loc[source_id], all_df, dev_config, "terminal",
+        )
+        assert "successor_phase" in rec
+        assert "temporal_gap_months" in rec
+        assert "condition_overlap" in rec
+        assert "intervention_similarity" in rec
+
+    def test_hard_negative_explicit_reason(self, dev_config):
         source = _make_trial(
             phases="PHASE2",
             lead_sponsor="Acme",
@@ -480,6 +754,64 @@ class TestAssignDevelopmentLabel:
         assert rec["label_value"] == "hard_negative"
         assert rec["label_confidence"] == "high"
 
+    def test_ambiguous_negative_vague_reason(self, dev_config):
+        """v3: terminated with vague reason → ambiguous_negative."""
+        source = _make_trial(
+            phases="PHASE2",
+            lead_sponsor="Acme",
+            intervention_names="DrugX",
+            conditions="Cancer",
+            primary_completion_date="2021-06-01",
+            overall_status="TERMINATED",
+            why_stopped="Sponsor decision",
+        )
+        all_df = _make_df([source])
+        source_id = all_df.index[0]
+
+        rec = assign_development_label(
+            source_id, all_df.loc[source_id], all_df, dev_config, "terminal",
+        )
+        assert rec["label_value"] == "ambiguous_negative"
+        assert rec["label_confidence"] == "low"
+
+    def test_ambiguous_negative_no_reason(self, dev_config):
+        """v3: terminated without reason → ambiguous_negative."""
+        source = _make_trial(
+            phases="PHASE2",
+            lead_sponsor="Acme",
+            intervention_names="DrugX",
+            conditions="Cancer",
+            primary_completion_date="2021-06-01",
+            overall_status="TERMINATED",
+            why_stopped=None,
+        )
+        all_df = _make_df([source])
+        source_id = all_df.index[0]
+
+        rec = assign_development_label(
+            source_id, all_df.loc[source_id], all_df, dev_config, "terminal",
+        )
+        assert rec["label_value"] == "ambiguous_negative"
+
+    def test_positive_stop_override(self, dev_config):
+        """v3: terminated with positive outcome → excluded_positive_terminal."""
+        source = _make_trial(
+            phases="PHASE2",
+            lead_sponsor="Acme",
+            intervention_names="DrugX",
+            conditions="Cancer",
+            primary_completion_date="2021-06-01",
+            overall_status="TERMINATED",
+            why_stopped="Study terminated after identifying a clinically meaningful reduction in proteinuria",
+        )
+        all_df = _make_df([source])
+        source_id = all_df.index[0]
+
+        rec = assign_development_label(
+            source_id, all_df.loc[source_id], all_df, dev_config, "terminal",
+        )
+        assert rec["label_value"] == "excluded_positive_terminal"
+
     def test_soft_negative_label(self, dev_config):
         source = _make_trial(
             phases="PHASE2",
@@ -496,6 +828,27 @@ class TestAssignDevelopmentLabel:
             source_id, all_df.loc[source_id], all_df, dev_config, "terminal",
         )
         assert rec["label_value"] == "soft_negative"
+
+    def test_soft_negative_has_flags(self, dev_config):
+        """v3: soft negatives should carry diagnostic flags."""
+        source = _make_trial(
+            phases="PHASE2",
+            lead_sponsor="Acme",
+            intervention_names="DrugX",
+            conditions="Cancer",
+            primary_completion_date="2021-06-01",
+            overall_status="COMPLETED",
+        )
+        all_df = _make_df([source])
+        source_id = all_df.index[0]
+
+        rec = assign_development_label(
+            source_id, all_df.loc[source_id], all_df, dev_config, "terminal",
+        )
+        assert "lifecycle_flag" in rec
+        assert "broad_basket_flag" in rec
+        assert "supportive_flag" in rec
+        assert "common_asset_flag" in rec
 
     def test_in_progress_becomes_censored(self, dev_config):
         source = _make_trial(
@@ -568,8 +921,8 @@ class TestBuildAllLabels:
                 f"Expected 5 unique nct_ids for {ltype}, got {subset['nct_id'].nunique()}"
             )
 
-    def test_audit_contains_modeling_ready(self, dev_config, tmp_path):
-        """v2: audit should report modeling-ready counts."""
+    def test_audit_contains_nested_benchmarks(self, dev_config, tmp_path):
+        """v3: audit should report nested benchmark sets."""
         cohort = _make_df([_make_trial(primary_completion_date="2020-01-01")])
         all_trials = cohort.copy()
 
@@ -582,3 +935,14 @@ class TestBuildAllLabels:
         )
         dev_audit = audit["label_types"]["development"]
         assert "modeling_ready" in dev_audit
+        mr = dev_audit["modeling_ready"]
+        assert "strict" in mr
+        assert "intermediate" in mr
+        assert "broad" in mr
+
+    def test_modeling_benchmark_constants(self):
+        """v3: verify the nested benchmark set definitions."""
+        assert MODELING_POSITIVES == {"advanced"}
+        assert MODELING_NEGATIVES_STRICT == {"hard_negative"}
+        assert MODELING_NEGATIVES_INTERMEDIATE == {"hard_negative", "ambiguous_negative"}
+        assert MODELING_NEGATIVES_BROAD == {"hard_negative", "ambiguous_negative", "soft_negative"}

@@ -3,10 +3,13 @@
 Produces a CSV with key trial metadata + label details so you can
 manually verify whether the labels are correct.
 
+v3: supports new label buckets (ambiguous_negative, excluded_positive_terminal)
+    and includes soft-negative diagnostic flags.
+
 Usage::
 
     python scripts/audit_labels.py
-    python scripts/audit_labels.py --phase PHASE2 --n-positive 30 --n-negative 30 --n-edge 20
+    python scripts/audit_labels.py --phase PHASE2 --n-positive 15 --n-negative 35 --n-edge 20
 """
 
 from __future__ import annotations
@@ -34,6 +37,16 @@ REVIEW_COLUMNS = [
     "label_confidence",
     "evidence_source",
     "notes",
+    # v3 match metadata (for advanced)
+    "successor_phase",
+    "temporal_gap_months",
+    "condition_overlap",
+    "intervention_similarity",
+    # v3 soft-negative flags
+    "lifecycle_flag",
+    "broad_basket_flag",
+    "supportive_flag",
+    "common_asset_flag",
     # Trial identity
     "brief_title",
     "phases",
@@ -67,10 +80,10 @@ def _find_latest(directory: Path, pattern: str) -> Path:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate label audit CSV for manual review.")
+    parser = argparse.ArgumentParser(description="Generate label audit CSV for manual review (v3).")
     parser.add_argument("--phase", default="PHASE2", help="Phase to filter to (default: PHASE2).")
-    parser.add_argument("--n-positive", type=int, default=30, help="Number of 'advanced' trials to sample.")
-    parser.add_argument("--n-negative", type=int, default=30, help="Number of 'did_not_advance' trials to sample.")
+    parser.add_argument("--n-positive", type=int, default=15, help="Number of 'advanced' trials to sample.")
+    parser.add_argument("--n-negative", type=int, default=35, help="Number of negative trials to sample.")
     parser.add_argument("--n-edge", type=int, default=20, help="Number of edge cases to sample.")
     parser.add_argument("--studies", type=Path, default=DEFAULT_STUDIES, help="Path to full studies parquet.")
     parser.add_argument("--output", "-o", type=Path, default=None, help="Output CSV path.")
@@ -88,8 +101,7 @@ def main() -> None:
     dev_labels = labels_df[labels_df["label_type"] == "development"].copy()
     logger.info("Development labels: %d total", len(dev_labels))
 
-    # ── Filter to requested phase (v2: also show excluded) ──────────────
-    # Join with studies to get phase info.
+    # ── Filter to requested phase (v3: also show excluded) ──────────────
     if "phases" not in dev_labels.columns:
         dev_labels = dev_labels.merge(
             studies_df[["phases"]],
@@ -98,10 +110,7 @@ def main() -> None:
             how="left",
         )
 
-    # v2: eligible trials are already phase-filtered by dev_eligibility.
-    # For audit, show all labels (including excluded) for the requested phase.
     phase_mask = dev_labels["phases"].str.contains(args.phase, case=False, na=False)
-    # Also include excluded trials whose exclusion was not phase-related.
     is_excluded_nonphase = dev_labels["label_value"].str.startswith("excluded_") & ~dev_labels["label_value"].str.contains("phase")
     dev_phase = dev_labels[phase_mask | is_excluded_nonphase].copy()
     logger.info(
@@ -111,55 +120,56 @@ def main() -> None:
         dev_phase["label_value"].value_counts().to_string(),
     )
 
-    # ── Sample each bucket (v2 label types) ────────────────────────────
-    advanced = dev_phase[dev_phase["label_value"] == "advanced"]
-    hard_neg = dev_phase[dev_phase["label_value"] == "hard_negative"]
-    soft_neg = dev_phase[dev_phase["label_value"] == "soft_negative"]
-    censored_recent = dev_phase[dev_phase["label_value"] == "censored_recent"]
-    censored_in_prog = dev_phase[dev_phase["label_value"] == "censored_in_progress"]
-    censored_early = dev_phase[dev_phase["label_value"] == "censored_early_negative"]
-    excluded = dev_phase[dev_phase["label_value"].str.startswith("excluded_")]
+    # ── Sample each bucket (v3 label types) ────────────────────────────
+    buckets = {
+        "advanced": dev_phase[dev_phase["label_value"] == "advanced"],
+        "hard_negative": dev_phase[dev_phase["label_value"] == "hard_negative"],
+        "ambiguous_negative": dev_phase[dev_phase["label_value"] == "ambiguous_negative"],
+        "soft_negative": dev_phase[dev_phase["label_value"] == "soft_negative"],
+        "excluded_positive_terminal": dev_phase[dev_phase["label_value"] == "excluded_positive_terminal"],
+        "censored_recent": dev_phase[dev_phase["label_value"] == "censored_recent"],
+        "censored_in_progress": dev_phase[dev_phase["label_value"] == "censored_in_progress"],
+        "censored_early_negative": dev_phase[dev_phase["label_value"] == "censored_early_negative"],
+        "excluded_other": dev_phase[
+            dev_phase["label_value"].str.startswith("excluded_")
+            & (dev_phase["label_value"] != "excluded_positive_terminal")
+        ],
+    }
 
-    # Allocate samples across buckets.
-    n_pos = min(args.n_positive, len(advanced))
-    n_hard = min(args.n_negative // 2, len(hard_neg))
-    n_soft = min(args.n_negative - n_hard, len(soft_neg))
-    n_edge_per = args.n_edge // 4  # split across 4 edge categories
+    # Allocate samples: prioritize modeling-relevant buckets.
+    sample_targets = {
+        "advanced": args.n_positive,
+        "hard_negative": args.n_negative // 3,
+        "ambiguous_negative": args.n_negative // 3,
+        "soft_negative": args.n_negative - 2 * (args.n_negative // 3),
+        "excluded_positive_terminal": args.n_edge // 5,
+        "censored_recent": args.n_edge // 5,
+        "censored_in_progress": args.n_edge // 5,
+        "censored_early_negative": args.n_edge // 5,
+        "excluded_other": args.n_edge // 5,
+    }
+
+    audit_bucket_names = {
+        "advanced": "positive (advanced)",
+        "hard_negative": "negative (hard)",
+        "ambiguous_negative": "negative (ambiguous)",
+        "soft_negative": "negative (soft)",
+        "excluded_positive_terminal": "edge (positive_terminal)",
+        "censored_recent": "edge (censored_recent)",
+        "censored_in_progress": "edge (censored_in_progress)",
+        "censored_early_negative": "edge (censored_early_negative)",
+        "excluded_other": "edge (excluded)",
+    }
 
     samples = []
-
-    if n_pos > 0:
-        s = advanced.sample(n=n_pos, random_state=42).copy()
-        s["audit_bucket"] = "positive (advanced)"
-        samples.append(s)
-        logger.info("Sampled %d advanced (of %d available)", n_pos, len(advanced))
-    else:
-        logger.warning("No 'advanced' labels found for %s!", args.phase)
-
-    if n_hard > 0:
-        s = hard_neg.sample(n=n_hard, random_state=42).copy()
-        s["audit_bucket"] = "negative (hard)"
-        samples.append(s)
-        logger.info("Sampled %d hard_negative (of %d available)", n_hard, len(hard_neg))
-
-    if n_soft > 0:
-        s = soft_neg.sample(n=n_soft, random_state=42).copy()
-        s["audit_bucket"] = "negative (soft)"
-        samples.append(s)
-        logger.info("Sampled %d soft_negative (of %d available)", n_soft, len(soft_neg))
-
-    for name, bucket, label in [
-        ("censored_recent", censored_recent, "edge (censored_recent)"),
-        ("censored_in_progress", censored_in_prog, "edge (censored_in_progress)"),
-        ("censored_early_negative", censored_early, "edge (censored_early_negative)"),
-        ("excluded", excluded, "edge (excluded)"),
-    ]:
-        n = min(n_edge_per, len(bucket))
+    for name, bucket_df in buckets.items():
+        target = sample_targets.get(name, 0)
+        n = min(target, len(bucket_df))
         if n > 0:
-            s = bucket.sample(n=n, random_state=42).copy()
-            s["audit_bucket"] = label
+            s = bucket_df.sample(n=n, random_state=42).copy()
+            s["audit_bucket"] = audit_bucket_names.get(name, name)
             samples.append(s)
-            logger.info("Sampled %d %s (of %d available)", n, name, len(bucket))
+            logger.info("Sampled %d %s (of %d available)", n, name, len(bucket_df))
 
     if not samples:
         logger.error("No samples generated — check phase filter and label data.")
@@ -184,40 +194,47 @@ def main() -> None:
     audit_out = audit_df[available_cols].copy()
 
     # Sort by bucket for easier review.
-    bucket_order = {
-        "positive (advanced)": 0,
-        "negative (did_not_advance)": 1,
-        "edge (censored)": 2,
-        "edge (low-confidence negative)": 3,
-    }
-    audit_out["_sort"] = audit_out["audit_bucket"].map(bucket_order)
+    bucket_order = {v: i for i, v in enumerate(audit_bucket_names.values())}
+    audit_out["_sort"] = audit_out["audit_bucket"].map(bucket_order).fillna(99)
     audit_out = audit_out.sort_values("_sort").drop(columns="_sort")
 
     # ── Save ────────────────────────────────────────────────────────────
-    output_path = args.output or (PROCESSED_DIR / "label_audit.csv")
+    output_path = args.output or (PROCESSED_DIR / "label_audit_v3.csv")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     audit_out.to_csv(output_path, index=False, encoding="utf-8-sig")
     logger.info("Saved audit CSV (%d rows) to %s", len(audit_out), output_path)
 
     # ── Summary ─────────────────────────────────────────────────────────
-    logger.info("=== Audit Summary ===")
+    logger.info("=== Audit Summary (v3) ===")
     logger.info("Buckets:\n%s", audit_out["audit_bucket"].value_counts().to_string())
+
+    # Report soft-negative flag distribution if present.
+    soft_rows = audit_out[audit_out["audit_bucket"] == "negative (soft)"]
+    flag_cols = ["lifecycle_flag", "broad_basket_flag", "supportive_flag", "common_asset_flag"]
+    present_flags = [c for c in flag_cols if c in soft_rows.columns]
+    if present_flags and len(soft_rows) > 0:
+        logger.info("\nSoft-negative diagnostic flags in sample:")
+        for fc in present_flags:
+            n_flagged = soft_rows[fc].sum() if soft_rows[fc].dtype == bool else 0
+            logger.info("  %s: %d / %d", fc, n_flagged, len(soft_rows))
+
     logger.info(
         "\nReview instructions:\n"
         "  1. Open %s in Excel/Sheets\n"
-        "  2. For each 'advanced' trial, click the URL and verify:\n"
+        "  2. For each 'advanced' trial, verify:\n"
         "     - Does a successor trial actually exist at a later phase?\n"
         "     - Is it the same drug / same indication?\n"
-        "     - Is the evidence_source field pointing to the right NCT ID?\n"
-        "  3. For each 'did_not_advance' trial, check:\n"
-        "     - Is the trial old enough that advancement should have happened?\n"
-        "     - Could a successor exist under a different name/sponsor?\n"
-        "     - Was the drug licensed to another company?\n"
-        "  4. For edge cases, check:\n"
-        "     - Should censored trials really be censored, or is the outcome knowable?\n"
-        "     - Are there obvious successors the fuzzy matching missed?\n"
-        "  5. Add a column 'reviewer_judgment' with: correct / incorrect / ambiguous\n"
-        "  6. Add a column 'notes' with your reasoning\n",
+        "     - Check match metadata (temporal_gap, condition_overlap, intervention_similarity)\n"
+        "  3. For each 'hard_negative', check:\n"
+        "     - Is the negative reason genuine and explicit?\n"
+        "  4. For each 'ambiguous_negative', check:\n"
+        "     - Is the reason truly vague, or should it be hard/positive?\n"
+        "  5. For each 'soft_negative', check:\n"
+        "     - Review diagnostic flags (lifecycle, broad_basket, supportive, common_asset)\n"
+        "     - Is this a genuine program non-advancement or a lifecycle/expansion study?\n"
+        "  6. For 'excluded_positive_terminal', verify:\n"
+        "     - Was the termination truly due to positive results?\n"
+        "  7. Add a column 'reviewer_judgment' with: correct / incorrect / ambiguous\n",
         output_path,
     )
 

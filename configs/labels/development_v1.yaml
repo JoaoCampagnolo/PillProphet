@@ -1,6 +1,6 @@
-# Development label configuration: v2 (revised after audit)
+# Development label configuration: v3 (revised after second audit)
 
-version: "2.0"
+version: "3.0"
 
 primary_target: "phase_advancement"
 
@@ -19,25 +19,40 @@ trial_linking:
     - "lead_sponsor"
     - "condition"
   fuzzy_threshold: 0.85
-  # v2: require temporal ordering (successor first_post_date > anchor first_post_date).
+  # v2+: require temporal ordering (successor first_post_date > anchor first_post_date).
   require_temporal_ordering: true
 
 # Censoring policy.
 censoring:
   min_followup_months: 36
-  # v2 censoring splits:
+  # v3 censoring splits:
   #   soft_negative with < min_followup → censored_recent
+  #   ambiguous_negative with < min_followup → censored_recent
   #   hard_negative with < min_followup → censored_early_negative
   #   in_progress status → censored_in_progress
 
-# Label values (v2 — expanded from v1).
+# Label values (v3 — expanded from v2).
 labels:
   positive: "advanced"
+  excluded_positive_terminal: "excluded_positive_terminal"
   hard_negative: "hard_negative"
+  ambiguous_negative: "ambiguous_negative"
   soft_negative: "soft_negative"
   censored_recent: "censored_recent"
   censored_in_progress: "censored_in_progress"
   censored_early_negative: "censored_early_negative"
+
+# Nested modeling benchmarks (v3).
+modeling_benchmarks:
+  strict:
+    positives: ["advanced"]
+    negatives: ["hard_negative"]
+  intermediate:
+    positives: ["advanced"]
+    negatives: ["hard_negative", "ambiguous_negative"]
+  broad:
+    positives: ["advanced"]
+    negatives: ["hard_negative", "ambiguous_negative", "soft_negative"]
 
 # Eligibility (documented here, enforced in dev_eligibility.py).
 eligibility:
@@ -51,3 +66,20 @@ eligibility:
     - "long-term safety"
     - "rollover"
     - "mechanistic probe"
+
+# Soft-negative diagnostic flags (v3 — metadata, not exclusions).
+# These flags enable sensitivity analysis during modeling.
+soft_negative_flags:
+  lifecycle_flag:
+    description: "Title suggests lifecycle / expansion / dose optimization"
+    action: "flag_only"
+  broad_basket_flag:
+    description: "Broad basket / platform / multi-tumor-type study"
+    action: "flag_only"
+  supportive_flag:
+    description: "Supportive / procedural / adjunctive study"
+    action: "flag_only"
+  common_asset_flag:
+    description: "Intervention appears in 10+ trials in cohort"
+    threshold: 10
+    action: "flag_only"

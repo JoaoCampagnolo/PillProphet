@@ -37,19 +37,30 @@ LABEL_COLUMNS = [
     "notes",
 ]
 
-# v2 development label values.
+# v3 development label values.
 DEV_LABEL_VALUES = {
     "advanced",
+    "excluded_positive_terminal",
     "hard_negative",
+    "ambiguous_negative",
     "soft_negative",
     "censored_recent",
     "censored_in_progress",
     "censored_early_negative",
 }
 
-# Labels usable for primary modeling (positives + negatives).
+# Labels usable for modeling — three nested benchmark sets.
 MODELING_POSITIVES = {"advanced"}
-MODELING_NEGATIVES = {"hard_negative", "soft_negative"}
+
+# Strict: only explicit negatives.
+MODELING_NEGATIVES_STRICT = {"hard_negative"}
+# Intermediate: explicit + ambiguous terminal.
+MODELING_NEGATIVES_INTERMEDIATE = {"hard_negative", "ambiguous_negative"}
+# Broad: all negatives.
+MODELING_NEGATIVES_BROAD = {"hard_negative", "ambiguous_negative", "soft_negative"}
+
+# Default modeling set (broad, for backwards compatibility).
+MODELING_NEGATIVES = MODELING_NEGATIVES_BROAD
 MODELING_LABELS = MODELING_POSITIVES | MODELING_NEGATIVES
 
 
@@ -151,15 +162,34 @@ def _build_audit(
 
         # For development labels, add modeling-ready summary.
         if ltype == "development":
-            modelable = subset[subset["label_value"].isin(MODELING_LABELS)]
-            n_pos = (modelable["label_value"].isin(MODELING_POSITIVES)).sum()
-            n_neg = (modelable["label_value"].isin(MODELING_NEGATIVES)).sum()
+            n_pos = (subset["label_value"].isin(MODELING_POSITIVES)).sum()
+
+            # v3: report nested benchmark sets.
+            def _benchmark_stats(neg_set, name):
+                n_neg = (subset["label_value"].isin(neg_set)).sum()
+                total = int(n_pos + n_neg)
+                return {
+                    "total": total,
+                    "positives": int(n_pos),
+                    "negatives": int(n_neg),
+                    "positive_rate": round(n_pos / total, 4) if total > 0 else 0,
+                }
+
             type_audit["modeling_ready"] = {
-                "total": len(modelable),
-                "positives": int(n_pos),
-                "negatives": int(n_neg),
-                "positive_rate": round(n_pos / len(modelable), 4) if len(modelable) > 0 else 0,
+                "strict": _benchmark_stats(MODELING_NEGATIVES_STRICT, "strict"),
+                "intermediate": _benchmark_stats(MODELING_NEGATIVES_INTERMEDIATE, "intermediate"),
+                "broad": _benchmark_stats(MODELING_NEGATIVES_BROAD, "broad"),
             }
+
+            # Soft-negative diagnostic flags.
+            soft_neg_subset = subset[subset["label_value"] == "soft_negative"]
+            flag_cols = ["lifecycle_flag", "broad_basket_flag", "supportive_flag", "common_asset_flag"]
+            flag_summary = {}
+            for fc in flag_cols:
+                if fc in soft_neg_subset.columns:
+                    flag_summary[fc] = int(soft_neg_subset[fc].sum())
+            if flag_summary:
+                type_audit["soft_negative_flags"] = flag_summary
 
             # Count excluded.
             excluded = subset[subset["label_value"].str.startswith("excluded_")]
