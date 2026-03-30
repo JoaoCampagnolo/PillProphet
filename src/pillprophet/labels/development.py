@@ -142,7 +142,21 @@ _NEGATION_PREFIXES = [
     r"did\s+not\s+(?:show|demonstrate|achieve|meet)\s+",
     r"without\s+",
     r"absence\s+of\s+",
+    r"low\s+probability\s+(?:to|of)\s+(?:confer|demonstrate|show|achieve)\s+",
+    r"unlikely\s+to\s+(?:confer|demonstrate|show|achieve)\s+",
 ]
+
+# Hard override: if why_stopped contains any of these, it is NEVER positive,
+# regardless of other phrases in the text.
+_POSITIVE_STOP_BLOCKERS = _re.compile(
+    r"|".join([
+        r"\bfutilit(?:y|le)\b",
+        r"\bdid\s+not\s+meet\b",
+        r"\bprimary\s+endpoint\s+(?:not|was\s+not|did\s+not)\b",
+        r"\bnot\s+(?:met|achieved|reached)\b",
+    ]),
+    _re.IGNORECASE,
+)
 
 _POSITIVE_STOP_RE = _re.compile(
     "|".join(f"(?:{p})" for p in _POSITIVE_STOP_PHRASES),
@@ -158,17 +172,22 @@ def _is_positive_terminal(why_stopped: str | None) -> bool:
     """Return True if why_stopped describes a positive outcome.
 
     Handles negation: "no clinically meaningful benefit" → False.
+    Hard blockers: "futility" anywhere in text → always False.
     """
     if not isinstance(why_stopped, str) or not why_stopped.strip():
         return False
     text = why_stopped.strip()
 
+    # Hard blockers: if these appear anywhere, it's never positive.
+    if _POSITIVE_STOP_BLOCKERS.search(text):
+        return False
+
     match = _POSITIVE_STOP_RE.search(text)
     if not match:
         return False
 
-    # Check for negation in the ~40 chars before the match.
-    start = max(0, match.start() - 40)
+    # Check for negation in the ~60 chars before the match.
+    start = max(0, match.start() - 60)
     prefix = text[start:match.start()]
     if _NEGATION_RE.search(prefix):
         return False
@@ -189,6 +208,7 @@ _EXPLICIT_NEGATIVE_KEYWORDS = [
     r"negative\s+(?:result|outcome|finding)",
     r"recruitment\s+failure", r"low\s+(?:enrollment|accrual|recruitment)",
     r"no\s+enrollment", r"unable\s+to\s+enroll",
+    r"^\s*enrollment\s*$",  # bare "enrollment" as sole reason = recruitment failure
     r"program\s+(?:terminated|discontinued|closed)",
     r"funding\s+(?:ended|withdrawn|unavailable|lost)",
     r"(?:company|sponsor)\s+(?:closed|bankrupt|dissolved)",

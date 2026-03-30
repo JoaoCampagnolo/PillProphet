@@ -201,7 +201,8 @@ def main() -> None:
     # ── Save ────────────────────────────────────────────────────────────
     output_path = args.output or (PROCESSED_DIR / "label_audit_v3.csv")
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    audit_out.to_csv(output_path, index=False, encoding="utf-8-sig")
+    import csv
+    audit_out.to_csv(output_path, index=False, encoding="utf-8-sig", quoting=csv.QUOTE_ALL)
     logger.info("Saved audit CSV (%d rows) to %s", len(audit_out), output_path)
 
     # ── Summary ─────────────────────────────────────────────────────────
@@ -215,7 +216,9 @@ def main() -> None:
     if present_flags and len(soft_rows) > 0:
         logger.info("\nSoft-negative diagnostic flags in sample:")
         for fc in present_flags:
-            n_flagged = soft_rows[fc].sum() if soft_rows[fc].dtype == bool else 0
+            # Flags may come back as bool, float, or object after parquet round-trip.
+            col = soft_rows[fc]
+            n_flagged = int(col.astype(bool).sum())
             logger.info("  %s: %d / %d", fc, n_flagged, len(soft_rows))
 
     logger.info(
