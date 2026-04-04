@@ -87,6 +87,7 @@ def run_single_experiment(
     train_cutoff: str,
     val_cutoff: str,
     output_dir: Path,
+    min_anchor_date: str | None = "2008-01-01",
 ) -> list:
     """Run a single benchmark×model×feature experiment. Returns list of EvalResults."""
     logger.info(
@@ -94,8 +95,12 @@ def run_single_experiment(
         "=" * 70, model_type, feature_set, benchmark_name, "=" * 70,
     )
 
-    # 1. Build benchmark dataset.
-    benchmark_df = build_benchmark_dataset(labels_df, benchmark_name)
+    # 1. Build benchmark dataset (with observability filter).
+    benchmark_df = build_benchmark_dataset(
+        labels_df, benchmark_name,
+        studies_df=studies_df,
+        min_anchor_date=min_anchor_date,
+    )
 
     if len(benchmark_df) == 0:
         logger.error("No trials in benchmark '%s'. Skipping.", benchmark_name)
@@ -187,7 +192,11 @@ def main() -> None:
     # ── Inspect mode ───────────────────────────────────────────────────
     if args.inspect_only:
         for bench in BENCHMARK_LADDER:
-            benchmark_df = build_benchmark_dataset(labels_df, bench)
+            benchmark_df = build_benchmark_dataset(
+                labels_df, bench,
+                studies_df=studies_df,
+                min_anchor_date="2008-01-01",
+            )
             if len(benchmark_df) == 0:
                 logger.info("Benchmark '%s': no trials.", bench.name)
                 continue

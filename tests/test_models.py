@@ -164,6 +164,51 @@ class TestBuildBenchmarkDataset:
             result = build_benchmark_dataset(labels, bench)
             assert "censored_recent" not in result["label_value"].values
 
+    def test_observability_filter_drops_recent(self):
+        """Trials after (max_anchor_date) should be excluded."""
+        labels = _make_labels(n_advanced=30, n_hard_neg=30)
+        studies = _make_studies(
+            labels[labels["label_type"] == "development"]["nct_id"].tolist(),
+            start_year_range=(2018, 2025),
+        )
+        # Without filter: includes all years.
+        result_no_filter = build_benchmark_dataset(labels, "strict")
+        # With filter: excludes trials after 2022-03-31.
+        result_filtered = build_benchmark_dataset(
+            labels, "strict",
+            studies_df=studies,
+            max_anchor_date="2022-03-31",
+        )
+        assert len(result_filtered) <= len(result_no_filter)
+
+    def test_observability_filter_min_anchor(self):
+        """Trials before min_anchor_date should be excluded."""
+        labels = _make_labels(n_advanced=30, n_hard_neg=30)
+        studies = _make_studies(
+            labels[labels["label_type"] == "development"]["nct_id"].tolist(),
+            start_year_range=(2005, 2020),
+        )
+        result_filtered = build_benchmark_dataset(
+            labels, "strict",
+            studies_df=studies,
+            max_anchor_date="2022-12-31",
+            min_anchor_date="2008-01-01",
+        )
+        # All included trials should have anchor date >= 2008.
+        merged = result_filtered.merge(
+            studies[["start_date"]],
+            left_on="nct_id", right_index=True, how="left",
+        )
+        dates = pd.to_datetime(merged["start_date"], errors="coerce").dropna()
+        assert (dates >= "2008-01-01").all()
+
+    def test_without_studies_df_no_filtering(self):
+        """When studies_df is not passed, no observability filtering occurs."""
+        labels = _make_labels()
+        result = build_benchmark_dataset(labels, "strict")
+        expected_total = 20 + 30  # n_advanced + n_hard_neg
+        assert len(result) == expected_total
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # TEMPORAL SPLIT

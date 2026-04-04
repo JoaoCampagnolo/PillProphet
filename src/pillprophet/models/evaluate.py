@@ -97,6 +97,8 @@ def compute_metrics(
     # AUROC (secondary).
     try:
         auroc = roc_auc_score(y_true, y_prob)
+        if np.isnan(auroc):
+            auroc = 0.5
     except ValueError:
         auroc = 0.5  # Only one class present.
 
