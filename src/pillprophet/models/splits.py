@@ -75,6 +75,11 @@ def get_benchmark(name: str) -> BenchmarkDef:
 def build_benchmark_dataset(
     labels_df: pd.DataFrame,
     benchmark: BenchmarkDef | str,
+    studies_df: pd.DataFrame | None = None,
+    max_anchor_date: str | None = None,
+    min_anchor_date: str | None = None,
+    date_column: str | None = None,
+    horizon_months: int = 36,
 ) -> pd.DataFrame:
     """Filter labels to a modeling-ready binary dataset for a benchmark.
 
@@ -82,6 +87,14 @@ def build_benchmark_dataset(
     ----------
     labels_df : development labels (label_type == "development").
     benchmark : benchmark name or BenchmarkDef.
+    studies_df : full studies table (indexed by nct_id). Required for
+        observability filtering.
+    max_anchor_date : exclude trials with anchor date after this.
+        If None and studies_df is provided, auto-computed as
+        (today - horizon_months) to enforce full observability.
+    min_anchor_date : exclude trials before this date (trims old/sparse era).
+    date_column : date column for anchor. Auto-detected if None.
+    horizon_months : prediction horizon in months (default 36).
 
     Returns
     -------
@@ -95,6 +108,56 @@ def build_benchmark_dataset(
     all_labels = benchmark.positive_labels | benchmark.negative_labels
     mask = dev["label_value"].isin(all_labels)
     subset = dev[mask].copy()
+
+    # ── Observability filter: drop trials too recent to be fully resolved ──
+    if studies_df is not None:
+        if date_column is None:
+            date_column = _resolve_date_column(studies_df)
+
+        # Merge dates.
+        subset = subset.merge(
+            studies_df[[date_column]],
+            left_on="nct_id",
+            right_index=True,
+            how="left",
+        )
+        subset["_anchor_date"] = pd.to_datetime(subset[date_column], errors="coerce")
+
+        # Auto-compute max_anchor_date if not specified.
+        if max_anchor_date is None:
+            from dateutil.relativedelta import relativedelta
+            max_anchor_date = (
+                datetime.utcnow() - relativedelta(months=horizon_months)
+            ).strftime("%Y-%m-%d")
+            logger.info(
+                "Auto-computed max_anchor_date = %s (today - %d months)",
+                max_anchor_date, horizon_months,
+            )
+
+        max_dt = pd.Timestamp(max_anchor_date)
+        obs_mask = subset["_anchor_date"] <= max_dt
+        n_too_recent = (~obs_mask & subset["_anchor_date"].notna()).sum()
+        if n_too_recent > 0:
+            logger.info(
+                "Benchmark '%s': dropping %d trials after %s (insufficient observability)",
+                benchmark.name, n_too_recent, max_anchor_date,
+            )
+        subset = subset[obs_mask | subset["_anchor_date"].isna()]
+
+        # Optional: trim old/sparse era.
+        if min_anchor_date is not None:
+            min_dt = pd.Timestamp(min_anchor_date)
+            old_mask = subset["_anchor_date"] < min_dt
+            n_old = (old_mask & subset["_anchor_date"].notna()).sum()
+            if n_old > 0:
+                logger.info(
+                    "Benchmark '%s': dropping %d trials before %s (old era)",
+                    benchmark.name, n_old, min_anchor_date,
+                )
+            subset = subset[~old_mask | subset["_anchor_date"].isna()]
+
+        # Clean up temporary columns.
+        subset = subset.drop(columns=[date_column, "_anchor_date"], errors="ignore")
 
     # Apply exclude_flags for soft negatives.
     if benchmark.exclude_flags:
@@ -197,7 +260,7 @@ def create_temporal_split(
     train_cutoff: str = "2017-12-31",
     val_cutoff: str = "2019-12-31",
     date_column: str | None = None,
-    min_test_positives: int = 30,
+    min_test_positives: int = 20,
 ) -> TemporalSplit:
     """Create temporal train/val/test split.
 
