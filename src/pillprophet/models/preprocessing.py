@@ -102,7 +102,7 @@ def _prepare_text(
     config = load_config(config_path)
     text_cfg = config.get("tfidf", {})
 
-    fields = config.get("fields", [])
+    fields = config.get("text_fields", config.get("fields", []))
     field_names = [f["source_column"] for f in fields]
     preproc = config.get("preprocessing", {})
 
