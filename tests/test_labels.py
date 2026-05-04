@@ -979,3 +979,141 @@ class TestBuildAllLabels:
         assert MODELING_NEGATIVES_STRICT == {"hard_negative"}
         assert MODELING_NEGATIVES_INTERMEDIATE == {"hard_negative", "ambiguous_negative"}
         assert MODELING_NEGATIVES_BROAD == {"hard_negative", "ambiguous_negative", "soft_negative"}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PR 2: TASK IDENTITY
+# ═══════════════════════════════════════════════════════════════════════════
+
+from pillprophet.labels.label_factory import (
+    DEFAULT_DEVELOPMENT_TASK,
+    DEFAULT_OPERATIONAL_TASK,
+    normalize_label_task,
+)
+
+
+class TestTaskIdentity:
+    """PR 2: every label record carries a label_task identifier."""
+
+    def test_constants(self):
+        assert DEFAULT_DEVELOPMENT_TASK == "phase2_to_phase3_v1"
+        assert DEFAULT_OPERATIONAL_TASK == "operational_status_v1"
+
+    def test_label_columns_includes_label_task(self):
+        assert "label_task" in LABEL_COLUMNS
+
+    def test_dev_labels_get_phase2_to_phase3_v1(self, dev_config, tmp_path):
+        cohort = _make_df([_make_trial(primary_completion_date="2020-01-01")])
+        all_trials = cohort.copy()
+
+        import yaml
+        cfg_path = tmp_path / "dev.yaml"
+        # Default task name is set by build_development_labels when missing.
+        cfg_path.write_text(yaml.dump(dev_config))
+
+        labels, _ = build_all_labels(
+            cohort, all_trials, dev_config_path=cfg_path, save=False,
+        )
+        dev = labels[labels["label_type"] == "development"]
+        assert (dev["label_task"] == "phase2_to_phase3_v1").all()
+
+    def test_operational_labels_get_operational_status_v1(self, dev_config, tmp_path):
+        cohort = _make_df([_make_trial()])
+        all_trials = cohort.copy()
+
+        import yaml
+        cfg_path = tmp_path / "dev.yaml"
+        cfg_path.write_text(yaml.dump(dev_config))
+
+        labels, _ = build_all_labels(
+            cohort, all_trials, dev_config_path=cfg_path, save=False,
+        )
+        op = labels[labels["label_type"] == "operational"]
+        assert (op["label_task"] == "operational_status_v1").all()
+
+    def test_dev_labels_do_not_get_operational_task(self, dev_config, tmp_path):
+        """Cross-check: dev rows must not be labeled as operational task."""
+        cohort = _make_df([_make_trial()])
+        all_trials = cohort.copy()
+
+        import yaml
+        cfg_path = tmp_path / "dev.yaml"
+        cfg_path.write_text(yaml.dump(dev_config))
+
+        labels, _ = build_all_labels(
+            cohort, all_trials, dev_config_path=cfg_path, save=False,
+        )
+        dev = labels[labels["label_type"] == "development"]
+        op = labels[labels["label_type"] == "operational"]
+        assert "operational_status_v1" not in set(dev["label_task"])
+        assert "phase2_to_phase3_v1" not in set(op["label_task"])
+
+    def test_audit_reports_task_counts(self, dev_config, tmp_path):
+        cohort = _make_df([_make_trial(primary_completion_date="2020-01-01")])
+        all_trials = cohort.copy()
+
+        import yaml
+        cfg_path = tmp_path / "dev.yaml"
+        cfg_path.write_text(yaml.dump(dev_config))
+
+        _, audit = build_all_labels(
+            cohort, all_trials, dev_config_path=cfg_path, save=False,
+        )
+        assert "label_tasks" in audit
+        assert "phase2_to_phase3_v1" in audit["label_tasks"]
+        assert "operational_status_v1" in audit["label_tasks"]
+
+
+class TestNormalizeLabelTask:
+    """PR 2: backward-compatible loading of older parquets."""
+
+    def test_adds_column_when_missing(self):
+        old_df = pd.DataFrame({
+            "nct_id": ["NCT00000001", "NCT00000002"],
+            "label_type": ["development", "operational"],
+            "label_value": ["advanced", "completed"],
+        })
+        assert "label_task" not in old_df.columns
+        normalized = normalize_label_task(old_df)
+        assert "label_task" in normalized.columns
+        assert normalized.loc[0, "label_task"] == "phase2_to_phase3_v1"
+        assert normalized.loc[1, "label_task"] == "operational_status_v1"
+
+    def test_idempotent(self):
+        df = pd.DataFrame({
+            "nct_id": ["NCT00000001"],
+            "label_type": ["development"],
+            "label_task": ["phase2_to_phase3_v1"],
+            "label_value": ["advanced"],
+        })
+        out = normalize_label_task(df)
+        assert out.loc[0, "label_task"] == "phase2_to_phase3_v1"
+
+    def test_fills_partial_nans(self):
+        df = pd.DataFrame({
+            "nct_id": ["NCT00000001", "NCT00000002"],
+            "label_type": ["development", "operational"],
+            "label_task": ["phase2_to_phase3_v1", None],
+            "label_value": ["advanced", "completed"],
+        })
+        out = normalize_label_task(df)
+        assert out.loc[0, "label_task"] == "phase2_to_phase3_v1"
+        assert out.loc[1, "label_task"] == "operational_status_v1"
+
+    def test_does_not_mutate_input(self):
+        df = pd.DataFrame({
+            "nct_id": ["NCT00000001"],
+            "label_type": ["development"],
+            "label_value": ["advanced"],
+        })
+        _ = normalize_label_task(df)
+        assert "label_task" not in df.columns
+
+    def test_unknown_label_type_gets_none(self):
+        df = pd.DataFrame({
+            "nct_id": ["NCT00000001"],
+            "label_type": ["unknown"],
+            "label_value": ["x"],
+        })
+        out = normalize_label_task(df)
+        assert pd.isna(out.loc[0, "label_task"])

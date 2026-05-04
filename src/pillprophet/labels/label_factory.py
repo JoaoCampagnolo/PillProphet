@@ -30,12 +30,54 @@ logger = logging.getLogger("pillprophet")
 LABEL_COLUMNS = [
     "nct_id",
     "label_type",
+    "label_task",
     "label_value",
     "label_date",
     "label_confidence",
     "evidence_source",
     "notes",
 ]
+
+# Task identifiers (PR 2).
+# Each (label_type, label_task) pair denotes a specific labeling problem.
+# The current pipeline produces exactly one development task and one
+# operational task; future PRs will add more development tasks
+# (phase1_to_phase2_v1, phase3_to_approval_v1, ...) without changing
+# the existing ones.
+DEFAULT_DEVELOPMENT_TASK = "phase2_to_phase3_v1"
+DEFAULT_OPERATIONAL_TASK = "operational_status_v1"
+
+# Mapping for backward-compatible loading of older label parquets that
+# predate the label_task column.
+_DEFAULT_TASK_BY_TYPE = {
+    "development": DEFAULT_DEVELOPMENT_TASK,
+    "operational": DEFAULT_OPERATIONAL_TASK,
+}
+
+
+def normalize_label_task(labels_df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure *labels_df* has a ``label_task`` column.
+
+    For older parquets without this column, fill it in from
+    ``label_type`` using the default mapping.  Rows whose ``label_type``
+    is not recognised get ``None`` so the caller can decide how to
+    handle them.
+
+    Returns a copy.  Idempotent — calling on a normalized table is a
+    no-op apart from filling missing values.
+    """
+    df = labels_df.copy()
+    if "label_task" not in df.columns:
+        df["label_task"] = df["label_type"].map(_DEFAULT_TASK_BY_TYPE)
+        return df
+    # Column exists but may have NaN entries (e.g., rows from a partial
+    # backfill).  Fill them from label_type.
+    missing = df["label_task"].isna()
+    if missing.any():
+        df.loc[missing, "label_task"] = df.loc[missing, "label_type"].map(
+            _DEFAULT_TASK_BY_TYPE
+        )
+    return df
 
 # v3 development label values.
 DEV_LABEL_VALUES = {
@@ -116,6 +158,9 @@ def build_all_labels(
     # ── 3. Merge into unified table ─────────────────────────────────────
     labels_df = pd.concat([op_labels, dev_labels], ignore_index=True)
 
+    # PR 2: ensure label_task is populated (older sub-builders may omit it).
+    labels_df = normalize_label_task(labels_df)
+
     # Ensure column order is consistent.
     extra_cols = [c for c in labels_df.columns if c not in LABEL_COLUMNS]
     labels_df = labels_df[LABEL_COLUMNS + extra_cols]
@@ -151,6 +196,12 @@ def _build_audit(
         "total_label_records": len(labels_df),
         "label_types": {},
     }
+
+    # PR 2: surface task identity counts.
+    if "label_task" in labels_df.columns:
+        audit["label_tasks"] = (
+            labels_df["label_task"].value_counts(dropna=False).to_dict()
+        )
 
     for ltype in labels_df["label_type"].unique():
         subset = labels_df[labels_df["label_type"] == ltype]

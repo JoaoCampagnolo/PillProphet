@@ -102,6 +102,8 @@ def build_operational_labels(cohort_df: pd.DataFrame) -> pd.DataFrame:
             {
                 "nct_id": nct_id,
                 "label_type": "operational",
+                # PR 2: explicit task identity.
+                "label_task": "operational_status_v1",
                 "label_value": label,
                 "label_date": label_date,
                 "label_confidence": confidence,

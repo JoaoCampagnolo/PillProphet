@@ -622,6 +622,11 @@ def build_development_labels(
     - Splits censored into censored_recent / censored_in_progress / censored_early_negative.
     - Tags excluded trials with their exclusion reason.
 
+    PR 2:
+    - Every record carries an explicit ``label_task`` column derived from
+      ``task_name`` in the YAML config (defaults to
+      ``phase2_to_phase3_v1``).
+
     Parameters
     ----------
     cohort_df : the filtered cohort (index = ``nct_id``).
@@ -635,6 +640,8 @@ def build_development_labels(
     config = load_config(config_path)
     censoring_cfg = config.get("censoring", {})
     min_followup = censoring_cfg.get("min_followup_months", 36)
+    # PR 2: task name from config, with safe default for older configs.
+    task_name = config.get("task_name", "phase2_to_phase3_v1")
 
     # Step 0: Pre-compute intervention counts for common-asset flagging.
     intervention_counts = _build_intervention_counts(all_trials_df)
@@ -670,6 +677,9 @@ def build_development_labels(
         records.append(rec)
 
     labels_df = pd.DataFrame(records)
+
+    # PR 2: stamp every record with the explicit task identifier.
+    labels_df["label_task"] = task_name
 
     # Step 2: Apply censoring to soft_negative labels with insufficient follow-up.
     labels_df = _apply_v2_censoring(

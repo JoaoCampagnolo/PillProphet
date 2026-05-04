@@ -673,3 +673,122 @@ class TestTfidfTrainOnly:
         assert "vectorizer.fit_transform(test_docs)" not in src
         assert "vectorizer.fit(val_docs)" not in src
         assert "vectorizer.fit(test_docs)" not in src
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PR 2: TASK IDENTITY IN BENCHMARK BUILDER
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestBenchmarkBuilderTaskFilter:
+    """build_benchmark_dataset must filter by label_task (PR 2)."""
+
+    def _labels_with_two_tasks(self) -> pd.DataFrame:
+        """Synthetic labels covering two pretend dev tasks."""
+        records = []
+        idx = 0
+        # phase2_to_phase3_v1: 10 advanced, 10 hard_negative
+        for _ in range(10):
+            records.append({
+                "nct_id": f"NCT{idx:08d}",
+                "label_type": "development",
+                "label_task": "phase2_to_phase3_v1",
+                "label_value": "advanced",
+            })
+            idx += 1
+        for _ in range(10):
+            records.append({
+                "nct_id": f"NCT{idx:08d}",
+                "label_type": "development",
+                "label_task": "phase2_to_phase3_v1",
+                "label_value": "hard_negative",
+            })
+            idx += 1
+        # phase1_to_phase2_v1: 5 advanced, 5 hard_negative (a hypothetical
+        # future task — not registered yet, but the filter must respect it).
+        for _ in range(5):
+            records.append({
+                "nct_id": f"NCT{idx:08d}",
+                "label_type": "development",
+                "label_task": "phase1_to_phase2_v1",
+                "label_value": "advanced",
+            })
+            idx += 1
+        for _ in range(5):
+            records.append({
+                "nct_id": f"NCT{idx:08d}",
+                "label_type": "development",
+                "label_task": "phase1_to_phase2_v1",
+                "label_value": "hard_negative",
+            })
+            idx += 1
+        return pd.DataFrame(records)
+
+    def test_default_filters_to_phase2_task(self):
+        labels = self._labels_with_two_tasks()
+        result = build_benchmark_dataset(labels, "strict")
+        # Should only contain the phase2_to_phase3_v1 trials.
+        assert len(result) == 20
+        assert result["y"].sum() == 10
+        # Ensure phase1 trials were filtered out.
+        merged = result.merge(
+            labels[["nct_id", "label_task"]], on="nct_id", how="left",
+        )
+        assert (merged["label_task"] == "phase2_to_phase3_v1").all()
+
+    def test_explicit_task_argument(self):
+        labels = self._labels_with_two_tasks()
+        result = build_benchmark_dataset(
+            labels, "strict", label_task="phase1_to_phase2_v1",
+        )
+        assert len(result) == 10
+        assert result["y"].sum() == 5
+
+    def test_unknown_task_returns_empty(self):
+        labels = self._labels_with_two_tasks()
+        result = build_benchmark_dataset(
+            labels, "strict", label_task="phase3_to_approval_v1",
+        )
+        assert len(result) == 0
+
+    def test_old_parquet_without_label_task_still_works(self):
+        """Backward compat: labels missing label_task get filled in."""
+        old_labels = _make_labels(n_advanced=10, n_hard_neg=10)
+        # Verify the synthetic labels have no label_task column to start.
+        assert "label_task" not in old_labels.columns
+        result = build_benchmark_dataset(old_labels, "strict")
+        # Default task is phase2_to_phase3_v1, which dev rows get inferred to.
+        assert len(result) == 20
+        assert result["y"].sum() == 10
+
+
+class TestRunTrainCli:
+    """Smoke test the run_train CLI grew the --label-task flag."""
+
+    def test_cli_has_label_task_flag(self):
+        import subprocess
+        import sys
+        from pillprophet.utils.paths import PROJECT_ROOT
+
+        result = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "scripts" / "run_train.py"), "--help"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0
+        assert "--label-task" in result.stdout
+        assert "phase2_to_phase3_v1" in result.stdout
+
+
+class TestAuditCli:
+    """Smoke test the audit_labels CLI grew the --label-task flag."""
+
+    def test_cli_has_label_task_flag(self):
+        import subprocess
+        import sys
+        from pillprophet.utils.paths import PROJECT_ROOT
+
+        result = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "scripts" / "audit_labels.py"), "--help"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0
+        assert "--label-task" in result.stdout

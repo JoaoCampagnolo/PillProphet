@@ -87,6 +87,15 @@ def main() -> None:
     parser.add_argument("--n-edge", type=int, default=20, help="Number of edge cases to sample.")
     parser.add_argument("--studies", type=Path, default=DEFAULT_STUDIES, help="Path to full studies parquet.")
     parser.add_argument("--output", "-o", type=Path, default=None, help="Output CSV path.")
+    parser.add_argument(
+        "--label-task",
+        default="phase2_to_phase3_v1",
+        help=(
+            "Filter to this label_task (PR 2). Older parquets without "
+            "the column are normalised on load: development -> "
+            "phase2_to_phase3_v1, operational -> operational_status_v1."
+        ),
+    )
     args = parser.parse_args()
 
     # ── Load data ───────────────────────────────────────────────────────
@@ -97,9 +106,26 @@ def main() -> None:
     logger.info("Loading studies from %s", args.studies)
     studies_df = load_dataset(args.studies)
 
-    # ── Filter to development labels ────────────────────────────────────
-    dev_labels = labels_df[labels_df["label_type"] == "development"].copy()
-    logger.info("Development labels: %d total", len(dev_labels))
+    # ── Normalize task identity (PR 2: backward-compat for old parquets) ──
+    from pillprophet.labels.label_factory import normalize_label_task
+    labels_df = normalize_label_task(labels_df)
+
+    # ── Filter to development labels for the requested task ────────────
+    dev_labels = labels_df[
+        (labels_df["label_type"] == "development")
+        & (labels_df["label_task"] == args.label_task)
+    ].copy()
+    logger.info(
+        "Development labels (task=%s): %d total",
+        args.label_task, len(dev_labels),
+    )
+    if len(dev_labels) == 0:
+        logger.error(
+            "No labels for label_task=%r. Available tasks: %s",
+            args.label_task,
+            sorted(labels_df["label_task"].dropna().unique().tolist()),
+        )
+        return
 
     # ── Filter to requested phase (v3: also show excluded) ──────────────
     if "phases" not in dev_labels.columns:
