@@ -189,3 +189,18 @@ The split summary JSON for every trained experiment records both fields under `d
 **Bootstrap CIs:** test-set PR-AUC, AUROC, and precision@10pct can be reported with stratified-bootstrap 95% CIs (1000 iterations, fixed seed). Enable with `--bootstrap-iters 1000`.
 
 The frozen v0 reference and the corrected v1 reference live under `data/processed/benchmarks/` and should not be modified.
+
+## Task Identity (PR 2)
+
+Every label record now carries a `label_task` string identifying which labeling problem it belongs to:
+
+| `label_type` | `label_task` |
+|---|---|
+| `development` | `phase2_to_phase3_v1` |
+| `operational` | `operational_status_v1` |
+
+Older parquets without the column are loaded with the same defaults via `pillprophet.labels.label_factory.normalize_label_task()`. The benchmark builder, training script, and audit script all filter by `label_task` (default `phase2_to_phase3_v1`) and namespace their outputs under the task name.
+
+The current development labels are **legacy semantic labels** (`advanced`, `hard_negative`, `ambiguous_negative`, `soft_negative`, `censored_*`, `excluded_*`). A future PR may introduce a parallel set of literal **event-based labels** (e.g. `next_phase_successor_observed`, `terminal_negative_event_observed`, `insufficient_followup_for_horizon`). PR 2 does not touch label semantics — only the task identity wrapper.
+
+See `docs/benchmark_policy.md` for the broader task family.

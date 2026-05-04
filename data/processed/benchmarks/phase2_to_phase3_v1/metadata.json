@@ -1,10 +1,15 @@
 {
-  "benchmark_name": "phase2_to_phase3_v1_firstpost_split",
-  "status": "post-PR-1 reference",
+  "benchmark_name": "phase2_to_phase3_v1",
+  "status": "canonical reference (post-PR-1 baseline; named in PR-2)",
   "produced_at": "2026-05-04",
+  "label_task": "phase2_to_phase3_v1",
+  "task_description": "Exact PHASE2 treatment trials; event is a valid later-phase successor within 36 months.",
   "label_parquet": "data/interim/labels/labels_20260404_090216.parquet",
   "label_policy_version": "3.1",
-  "task": "phase2_to_phase3",
+  "code_reference": {
+    "pr1_methodology": "PR #16 (merged) — first_post_date split, frozen threshold, bootstrap CIs",
+    "pr2_task_identity": "PR #2 — added label_task column, namespaced output paths, freeze canonical reference"
+  },
   "split": {
     "split_column": "first_post_date",
     "split_column_role": "prediction_date / split_date",
@@ -14,7 +19,7 @@
     "horizon_months": 36
   },
   "label_horizon_anchor_date": "start_date",
-  "label_horizon_anchor_note": "Label factory still uses start_date as the horizon anchor inside find_successor_trials and observability filtering. The split column is now first_post_date but the horizon anchor is preserved for backwards compatibility.",
+  "label_horizon_anchor_note": "Label factory uses start_date as the horizon anchor inside find_successor_trials and observability filtering. The split column is first_post_date but the horizon anchor is preserved for backwards compatibility with v0. Future PRs may revisit.",
   "evaluation": {
     "threshold_optimization": "VALIDATION-ONLY — frozen and applied unchanged to test",
     "threshold_metric": "f1",
@@ -51,7 +56,7 @@
     "split_column":             {"v0": "start_date", "v1": "first_post_date"},
     "threshold_selection":      {"v0": "per-split (leak)", "v1": "frozen on val, applied to test"},
     "bootstrap_ci":             {"v0": "none", "v1": "stratified, 1000 iters, seed=12345"},
-    "horizon_anchor":           {"v0": "start_date", "v1": "start_date (unchanged in PR 1)"},
+    "horizon_anchor":           {"v0": "start_date", "v1": "start_date (unchanged)"},
     "experiment_grid_size":     {"v0": 6, "v1": 9},
     "strict_train_n":           {"v0": 1257, "v1": 951},
     "strict_pre_2008_dropped":  {"v0": 43,   "v1": 359}

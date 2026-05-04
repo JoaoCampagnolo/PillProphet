@@ -88,6 +88,7 @@ def build_benchmark_dataset(
     min_anchor_date: str | None = None,
     date_column: str | None = None,
     horizon_months: int = 36,
+    label_task: str = "phase2_to_phase3_v1",
 ) -> pd.DataFrame:
     """Filter labels to a modeling-ready binary dataset for a benchmark.
 
@@ -103,6 +104,10 @@ def build_benchmark_dataset(
     min_anchor_date : exclude trials before this date (trims old/sparse era).
     date_column : date column for anchor. Auto-detected if None.
     horizon_months : prediction horizon in months (default 36).
+    label_task : explicit task identifier (PR 2).  Defaults to
+        ``phase2_to_phase3_v1``, the only task available today.  When
+        new tasks land in future PRs, callers must select one
+        explicitly.
 
     Returns
     -------
@@ -111,7 +116,22 @@ def build_benchmark_dataset(
     if isinstance(benchmark, str):
         benchmark = get_benchmark(benchmark)
 
-    dev = labels_df[labels_df["label_type"] == "development"].copy()
+    # PR 2: ensure label_task column exists for backward compatibility
+    # with older parquets.  Imported here to avoid a circular import.
+    from pillprophet.labels.label_factory import normalize_label_task
+    labels_df = normalize_label_task(labels_df)
+
+    dev = labels_df[
+        (labels_df["label_type"] == "development")
+        & (labels_df["label_task"] == label_task)
+    ].copy()
+    if len(dev) == 0:
+        logger.warning(
+            "No development labels found for label_task=%r. "
+            "Available tasks: %s",
+            label_task,
+            sorted(labels_df["label_task"].dropna().unique().tolist()),
+        )
 
     all_labels = benchmark.positive_labels | benchmark.negative_labels
     mask = dev["label_value"].isin(all_labels)

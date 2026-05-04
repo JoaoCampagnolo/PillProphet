@@ -91,6 +91,7 @@ def run_single_experiment(
     split_column: str | None = None,
     bootstrap_iters: int = 0,
     bootstrap_seed: int = 12345,
+    label_task: str = "phase2_to_phase3_v1",
 ) -> list:
     """Run a single benchmark×model×feature experiment. Returns list of EvalResults."""
     logger.info(
@@ -103,6 +104,7 @@ def run_single_experiment(
         labels_df, benchmark_name,
         studies_df=studies_df,
         min_anchor_date=min_anchor_date,
+        label_task=label_task,
     )
 
     if len(benchmark_df) == 0:
@@ -167,9 +169,15 @@ def run_single_experiment(
         save_eval_result(test_result, exp_dir)
         results.append(test_result)
 
-    # Save split summary.
+    # Save split summary, augmented with PR 2 provenance fields so each
+    # experiment is fully self-describing.
+    summary = dict(split.summary)
+    summary["label_task"] = label_task
+    summary["benchmark"] = benchmark_name
+    summary["feature_set"] = feature_set
+    summary["model_type"] = model_name
     with open(exp_dir / "split_summary.json", "w") as f:
-        json.dump(split.summary, f, indent=2)
+        json.dump(summary, f, indent=2)
 
     return results
 
@@ -203,6 +211,14 @@ def main() -> None:
         "--bootstrap-seed", type=int, default=12345,
         help="Random seed for bootstrap resampling.",
     )
+    parser.add_argument(
+        "--label-task",
+        default="phase2_to_phase3_v1",
+        help=(
+            "Development label task to model. Currently only "
+            "phase2_to_phase3_v1 is registered; future PRs will add more."
+        ),
+    )
     args = parser.parse_args()
 
     # ── Load data ──────────────────────────────────────────────────────
@@ -220,6 +236,7 @@ def main() -> None:
                 labels_df, bench,
                 studies_df=studies_df,
                 min_anchor_date="2008-01-01",
+                label_task=args.label_task,
             )
             if len(benchmark_df) == 0:
                 logger.info("Benchmark '%s': no trials.", bench.name)
@@ -239,7 +256,12 @@ def main() -> None:
     snapshot_df = build_cohort_snapshots(studies_df, timepoint="T0")
 
     tag = time.strftime("%Y%m%d_%H%M%S")
-    output_dir = args.output / tag
+    # PR 2: namespace runs by task so future tasks don't collide.
+    # Skip the namespacing when --output points inside a benchmark
+    # provenance directory (the user is intentionally pinning the
+    # output location for a freeze).
+    is_benchmark_target = "benchmarks" in args.output.parts
+    output_dir = args.output / tag if is_benchmark_target else args.output / args.label_task / tag
 
     # ── Run experiments ────────────────────────────────────────────────
     all_results = []
@@ -274,6 +296,7 @@ def main() -> None:
                     split_column=args.split_column,
                     bootstrap_iters=args.bootstrap_iters,
                     bootstrap_seed=args.bootstrap_seed,
+                    label_task=args.label_task,
                 )
                 all_results.extend(results)
             except Exception as e:
@@ -292,6 +315,7 @@ def main() -> None:
             split_column=args.split_column,
             bootstrap_iters=args.bootstrap_iters,
             bootstrap_seed=args.bootstrap_seed,
+            label_task=args.label_task,
         )
         all_results.extend(results)
 
