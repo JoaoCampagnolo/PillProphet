@@ -1,0 +1,47 @@
+{
+  "benchmark_name": "phase2_to_phase3_v0_startdate_split",
+  "status": "frozen reference (pre-correction)",
+  "frozen_at": "2026-05-04",
+  "source_run": "data/processed/models/20260404_095604/",
+  "label_parquet": "data/interim/labels/labels_20260404_090216.parquet",
+  "label_policy_version": "3.1",
+  "task": "phase2_to_phase3",
+  "split": {
+    "split_column": "start_date",
+    "train_cutoff": "2017-12-31",
+    "val_cutoff": "2019-12-31",
+    "min_anchor_date": "2008-01-01",
+    "horizon_months": 36
+  },
+  "label_horizon_anchor_date": "start_date (used inside find_successor_trials)",
+  "evaluation": {
+    "threshold_optimization": "PER-SPLIT (val and test optimized independently — known leak)",
+    "threshold_metric": "F1 (argmax on precision-recall curve)",
+    "bootstrap_ci": "not computed"
+  },
+  "experiments": [
+    "logistic_structured_strict",
+    "logistic_structured_intermediate",
+    "lightgbm_structured_strict",
+    "lightgbm_structured_intermediate",
+    "logistic_text_strict",
+    "logistic_fusion_strict"
+  ],
+  "model_configs": {
+    "logistic": "configs/models/logistic_regression.yaml",
+    "lightgbm": "configs/models/lightgbm.yaml"
+  },
+  "feature_configs": {
+    "structured": "configs/features/structured_v1.yaml",
+    "text": "configs/features/text_v1.yaml"
+  },
+  "split_counts": {
+    "strict": {"train": 1257, "val": 179, "test": 157},
+    "intermediate": {"train": 2564, "val": 349, "test": 364}
+  },
+  "known_issues": [
+    "Threshold was selected independently on val AND test, leaking test labels into the threshold choice.",
+    "Default split column was `start_date` (T1 field), not `first_post_date` (T0). For T0-only models this means split membership is keyed to study-start time rather than registration time.",
+    "No uncertainty estimates were computed for headline metrics."
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "benchmark_name": "phase2_to_phase3_v1_firstpost_split",
+  "status": "post-PR-1 reference",
+  "produced_at": "2026-05-04",
+  "label_parquet": "data/interim/labels/labels_20260404_090216.parquet",
+  "label_policy_version": "3.1",
+  "task": "phase2_to_phase3",
+  "split": {
+    "split_column": "first_post_date",
+    "split_column_role": "prediction_date / split_date",
+    "train_cutoff": "2017-12-31",
+    "val_cutoff": "2019-12-31",
+    "min_anchor_date": "2008-01-01",
+    "horizon_months": 36
+  },
+  "label_horizon_anchor_date": "start_date",
+  "label_horizon_anchor_note": "Label factory still uses start_date as the horizon anchor inside find_successor_trials and observability filtering. The split column is now first_post_date but the horizon anchor is preserved for backwards compatibility.",
+  "evaluation": {
+    "threshold_optimization": "VALIDATION-ONLY — frozen and applied unchanged to test",
+    "threshold_metric": "f1",
+    "bootstrap_iters": 1000,
+    "bootstrap_seed": 12345,
+    "bootstrap_strategy": "stratified (resamples with single class skipped)",
+    "ci_metrics": ["pr_auc", "auroc", "precision_at_10pct"]
+  },
+  "experiments": [
+    "logistic_structured_strict",
+    "logistic_structured_intermediate",
+    "lightgbm_structured_strict",
+    "lightgbm_structured_intermediate",
+    "logistic_text_strict",
+    "logistic_text_intermediate",
+    "logistic_text_broad_filtered",
+    "logistic_fusion_strict",
+    "logistic_fusion_intermediate"
+  ],
+  "model_configs": {
+    "logistic": "configs/models/logistic_regression.yaml",
+    "lightgbm": "configs/models/lightgbm.yaml"
+  },
+  "feature_configs": {
+    "structured": "configs/features/structured_v1.yaml",
+    "text": "configs/features/text_v1.yaml"
+  },
+  "split_counts": {
+    "strict":         {"train": 951,  "val": 171, "test": 153},
+    "intermediate":   {"train": 1969, "val": 369, "test": 324},
+    "broad_filtered": {"train": 3661, "val": 634, "test": 647}
+  },
+  "differences_vs_v0": {
+    "split_column":             {"v0": "start_date", "v1": "first_post_date"},
+    "threshold_selection":      {"v0": "per-split (leak)", "v1": "frozen on val, applied to test"},
+    "bootstrap_ci":             {"v0": "none", "v1": "stratified, 1000 iters, seed=12345"},
+    "horizon_anchor":           {"v0": "start_date", "v1": "start_date (unchanged in PR 1)"},
+    "experiment_grid_size":     {"v0": 6, "v1": 9},
+    "strict_train_n":           {"v0": 1257, "v1": 951},
+    "strict_pre_2008_dropped":  {"v0": 43,   "v1": 359}
+  }
+}

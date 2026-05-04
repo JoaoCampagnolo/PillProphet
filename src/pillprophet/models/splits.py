@@ -3,7 +3,15 @@
 Key design decisions:
 - Prediction horizon is applied FIRST: only trials with enough follow-up
   for label resolution are included.
-- Temporal split is based on trial start_date (or first_post_date as fallback).
+- Temporal split is based on the *prediction-time* anchor date.  For
+  T0 models this defaults to ``first_post_date`` (the date the trial was
+  registered).  ``start_date`` is also supported via the ``date_column``
+  argument or the ``--split-column`` CLI flag — this is the date used by
+  the v0 reference benchmark.
+- The ``label_horizon_anchor_date`` is *separate* from the split column.
+  It is the date the 36-month observability and successor-search windows
+  are measured from.  For now the label code keeps using ``start_date``
+  as the horizon anchor; PR 1 logs this explicitly so it can be revisited.
 - All preprocessing (imputation, scaling, TF-IDF vocab) must be fit on
   train split only — this module does NOT do preprocessing, only splitting.
 - Benchmark ladder defines which label buckets are positive/negative.
@@ -204,9 +212,20 @@ class TemporalSplit:
     summary: dict
 
 
+DEFAULT_SPLIT_COLUMN = "first_post_date"
+
+
 def _resolve_date_column(studies_df: pd.DataFrame) -> str:
-    """Pick the best available date column for splitting."""
-    for col in ("start_date", "first_post_date", "last_update_post_date"):
+    """Pick the best available date column for splitting.
+
+    Default preference order is ``first_post_date`` (T0, the registration
+    date — appropriate for T0-only models) → ``start_date`` (T1) →
+    ``last_update_post_date`` (T3).  v0 used ``start_date`` as default;
+    PR 1 flips the default to ``first_post_date`` so the split membership
+    is keyed to the prediction-time anchor rather than the actual
+    study-start date.
+    """
+    for col in ("first_post_date", "start_date", "last_update_post_date"):
         if col in studies_df.columns:
             n_valid = pd.to_datetime(studies_df[col], errors="coerce").notna().sum()
             if n_valid > len(studies_df) * 0.5:
@@ -318,13 +337,45 @@ def create_temporal_split(
             "positive_rate": round(n_pos / len(ids), 4) if ids else 0,
         }
 
+    # Per-year breakdown for each split (counts by year of the split column).
+    merged["_year"] = merged["_date"].dt.year
+    yearly = {}
+    for split_name, mask in (("train", train_mask), ("val", val_mask), ("test", test_mask)):
+        sub = merged.loc[mask]
+        if len(sub) == 0:
+            yearly[split_name] = {}
+            continue
+        agg = sub.groupby("_year").agg(
+            n_total=("y", "count"),
+            n_positive=("y", "sum"),
+        )
+        agg["n_negative"] = agg["n_total"] - agg["n_positive"]
+        yearly[split_name] = {
+            int(y): {
+                "n_total": int(row["n_total"]),
+                "n_positive": int(row["n_positive"]),
+                "n_negative": int(row["n_negative"]),
+            }
+            for y, row in agg.iterrows()
+            if pd.notna(y)
+        }
+
     summary = {
         "date_column": date_column,
+        "split_column_role": "prediction_date / split_date",
+        "label_horizon_anchor_date": "start_date",
+        "label_horizon_anchor_note": (
+            "PR 1: the label factory still uses start_date as the horizon "
+            "anchor inside find_successor_trials and observability filtering. "
+            "The split column above is used only to bucket trials into "
+            "train/val/test — it does not affect label horizon logic."
+        ),
         "train_cutoff": train_cutoff,
         "val_cutoff": val_cutoff,
         "train": _split_stats(train_ids, train_mask),
         "val": _split_stats(val_ids, val_mask),
         "test": _split_stats(test_ids, test_mask),
+        "yearly_counts": yearly,
     }
 
     # Warnings.

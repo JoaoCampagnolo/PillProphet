@@ -88,6 +88,9 @@ def run_single_experiment(
     val_cutoff: str,
     output_dir: Path,
     min_anchor_date: str | None = "2008-01-01",
+    split_column: str | None = None,
+    bootstrap_iters: int = 0,
+    bootstrap_seed: int = 12345,
 ) -> list:
     """Run a single benchmark×model×feature experiment. Returns list of EvalResults."""
     logger.info(
@@ -111,6 +114,7 @@ def run_single_experiment(
         benchmark_df, studies_df,
         train_cutoff=train_cutoff,
         val_cutoff=val_cutoff,
+        date_column=split_column,
     )
 
     if not split.train_ids:
@@ -146,6 +150,8 @@ def run_single_experiment(
         benchmark_name=benchmark_name,
         feature_set=feature_set,
         model_name=model_name,
+        bootstrap_iters=bootstrap_iters,
+        bootstrap_seed=bootstrap_seed,
     )
 
     # 6. Save.
@@ -175,10 +181,28 @@ def main() -> None:
     parser.add_argument("--benchmark", choices=[b.name for b in BENCHMARK_LADDER], default="strict")
     parser.add_argument("--train-cutoff", default="2017-12-31", help="End of training period.")
     parser.add_argument("--val-cutoff", default="2019-12-31", help="End of validation period.")
+    parser.add_argument(
+        "--split-column",
+        default=None,
+        choices=[None, "first_post_date", "start_date", "last_update_post_date"],
+        help=(
+            "Date column used for the train/val/test temporal split "
+            "(prediction_date / split_date). Defaults to first_post_date "
+            "(T0) — set to start_date to reproduce the v0 benchmark."
+        ),
+    )
     parser.add_argument("--studies", type=Path, default=DEFAULT_STUDIES)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--inspect-only", action="store_true", help="Only show temporal distribution, no training.")
     parser.add_argument("--run-all", action="store_true", help="Run all baseline experiments.")
+    parser.add_argument(
+        "--bootstrap-iters", type=int, default=1000,
+        help="Bootstrap iterations for test-set CIs (0 disables). Default 1000.",
+    )
+    parser.add_argument(
+        "--bootstrap-seed", type=int, default=12345,
+        help="Random seed for bootstrap resampling.",
+    )
     args = parser.parse_args()
 
     # ── Load data ──────────────────────────────────────────────────────
@@ -200,10 +224,13 @@ def main() -> None:
             if len(benchmark_df) == 0:
                 logger.info("Benchmark '%s': no trials.", bench.name)
                 continue
-            yearly = inspect_temporal_distribution(benchmark_df, studies_df)
+            yearly = inspect_temporal_distribution(
+                benchmark_df, studies_df, date_column=args.split_column,
+            )
             logger.info(
-                "\n=== Temporal distribution: %s ===\n%s\n",
-                bench.name, yearly.to_string(index=False),
+                "\n=== Temporal distribution: %s (split_column=%s) ===\n%s\n",
+                bench.name, args.split_column or "auto(first_post_date)",
+                yearly.to_string(index=False),
             )
         return
 
@@ -218,17 +245,21 @@ def main() -> None:
     all_results = []
 
     if args.run_all:
-        # Baseline experiment grid.
+        # Baseline experiment grid (PR 1: extended to cover text on more
+        # benchmarks and fusion on intermediate, per the PR 1 ask).
         experiments = [
             # Structured baselines across benchmarks.
             ("logistic", "structured", "strict"),
             ("logistic", "structured", "intermediate"),
             ("lightgbm", "structured", "strict"),
             ("lightgbm", "structured", "intermediate"),
-            # Text baseline on strict.
+            # Text baselines.
             ("logistic", "text", "strict"),
-            # Fusion on strict.
+            ("logistic", "text", "intermediate"),
+            ("logistic", "text", "broad_filtered"),
+            # Fusion baselines.
             ("logistic", "fusion", "strict"),
+            ("logistic", "fusion", "intermediate"),
         ]
         for model_type, feature_set, benchmark_name in experiments:
             try:
@@ -240,6 +271,9 @@ def main() -> None:
                     train_cutoff=args.train_cutoff,
                     val_cutoff=args.val_cutoff,
                     output_dir=output_dir,
+                    split_column=args.split_column,
+                    bootstrap_iters=args.bootstrap_iters,
+                    bootstrap_seed=args.bootstrap_seed,
                 )
                 all_results.extend(results)
             except Exception as e:
@@ -255,6 +289,9 @@ def main() -> None:
             train_cutoff=args.train_cutoff,
             val_cutoff=args.val_cutoff,
             output_dir=output_dir,
+            split_column=args.split_column,
+            bootstrap_iters=args.bootstrap_iters,
+            bootstrap_seed=args.bootstrap_seed,
         )
         all_results.extend(results)
 

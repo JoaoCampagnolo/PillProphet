@@ -172,3 +172,20 @@ The label factory module (`src/pillprophet/labels/`) orchestrates:
 ## Configuration
 
 All label parameters are defined in `configs/labels/development_v1.yaml` (currently at version 3.0).
+
+## Evaluation Behavior (PR 1)
+
+The label policy itself is unchanged in PR 1 — but the evaluation pipeline that consumes these labels was tightened. Two distinct dates are now exposed explicitly:
+
+| Field | Meaning | Default |
+|---|---|---|
+| `prediction_date` / `split_date` | Anchor used to bucket trials into train/val/test. The date a model would have access to. | `first_post_date` (T0). v0 used `start_date`; override via `--split-column start_date`. |
+| `label_horizon_anchor_date` | Date from which the 36-month observability and successor-search windows are measured. | `start_date` (preserved from v0; do not change in PR 1). |
+
+The split summary JSON for every trained experiment records both fields under `date_column`, `split_column_role`, and `label_horizon_anchor_date`.
+
+**Threshold policy:** the F1-optimal classification threshold is now selected on validation only and frozen for test. Test-set thresholds are never independently optimized. Threshold metadata (`threshold_value`, `threshold_source`, `threshold_metric_used`) is recorded in `eval_*.json`. PR-AUC, AUROC, Brier, and precision@k remain threshold-free and are unaffected.
+
+**Bootstrap CIs:** test-set PR-AUC, AUROC, and precision@10pct can be reported with stratified-bootstrap 95% CIs (1000 iterations, fixed seed). Enable with `--bootstrap-iters 1000`.
+
+The frozen v0 reference and the corrected v1 reference live under `data/processed/benchmarks/` and should not be modified.
