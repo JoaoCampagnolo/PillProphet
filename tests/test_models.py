@@ -384,3 +384,292 @@ class TestCalibration:
 
         assert calibrated.shape == (50,)
         assert all(0 <= p <= 1 for p in calibrated)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PR 1: METHODOLOGY CORRECTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+from pillprophet.models.evaluate import (
+    select_optimal_threshold,
+    _bootstrap_metric,
+)
+from pillprophet.models.splits import DEFAULT_SPLIT_COLUMN, _resolve_date_column
+from sklearn.metrics import average_precision_score, roc_auc_score
+
+
+class TestDefaultSplitColumn:
+    """PR 1: default split column should be first_post_date (T0)."""
+
+    def test_constant_is_first_post_date(self):
+        assert DEFAULT_SPLIT_COLUMN == "first_post_date"
+
+    def test_resolver_prefers_first_post_date(self):
+        df = _make_studies(["NCT00000001", "NCT00000002", "NCT00000003"])
+        # Both columns exist — first_post_date should win.
+        chosen = _resolve_date_column(df)
+        assert chosen == "first_post_date"
+
+    def test_resolver_falls_back_to_start_date(self):
+        df = _make_studies(["NCT00000001", "NCT00000002", "NCT00000003"])
+        df = df.drop(columns=["first_post_date"])
+        chosen = _resolve_date_column(df)
+        assert chosen == "start_date"
+
+    def test_explicit_start_date_via_create_temporal_split(self):
+        """Caller can override default by passing date_column=start_date."""
+        labels = _make_labels(n_advanced=50, n_hard_neg=50)
+        benchmark_df = build_benchmark_dataset(labels, "strict")
+        studies = _make_studies(benchmark_df["nct_id"].tolist())
+        split = create_temporal_split(
+            benchmark_df, studies, date_column="start_date",
+        )
+        assert split.split_column == "start_date"
+        assert split.summary["date_column"] == "start_date"
+
+    def test_default_uses_first_post_date(self):
+        labels = _make_labels(n_advanced=50, n_hard_neg=50)
+        benchmark_df = build_benchmark_dataset(labels, "strict")
+        studies = _make_studies(benchmark_df["nct_id"].tolist())
+        split = create_temporal_split(benchmark_df, studies)
+        assert split.split_column == "first_post_date"
+
+    def test_summary_has_role_and_horizon_anchor(self):
+        labels = _make_labels(n_advanced=50, n_hard_neg=50)
+        benchmark_df = build_benchmark_dataset(labels, "strict")
+        studies = _make_studies(benchmark_df["nct_id"].tolist())
+        split = create_temporal_split(benchmark_df, studies)
+        # PR 1: summary must distinguish split column from horizon anchor.
+        assert split.summary["split_column_role"] == "prediction_date / split_date"
+        assert split.summary["label_horizon_anchor_date"] == "start_date"
+        assert "yearly_counts" in split.summary
+
+
+class TestSelectOptimalThreshold:
+    def test_threshold_is_in_unit_interval(self):
+        rng = np.random.RandomState(0)
+        y_true = rng.randint(0, 2, size=100)
+        y_prob = rng.uniform(0, 1, size=100)
+        t = select_optimal_threshold(y_true, y_prob)
+        assert 0.0 <= t <= 1.0
+
+    def test_no_positives_returns_default(self):
+        y_true = np.zeros(20)
+        y_prob = np.linspace(0, 1, 20)
+        assert select_optimal_threshold(y_true, y_prob) == 0.5
+
+
+class TestThresholdFreezing:
+    """PR 1: validation threshold must be applied unchanged to test."""
+
+    def _make_synthetic(self, seed: int = 42):
+        """Synthetic well-separated val + test sets."""
+        rng = np.random.RandomState(seed)
+        n_val, n_test = 80, 80
+        y_val = rng.randint(0, 2, size=n_val)
+        y_prob_val = np.where(y_val == 1, rng.uniform(0.5, 1.0, n_val), rng.uniform(0.0, 0.5, n_val))
+        y_test = rng.randint(0, 2, size=n_test)
+        # Slightly worse separation on test — different optimal threshold if independent.
+        y_prob_test = np.where(y_test == 1, rng.uniform(0.4, 1.0, n_test), rng.uniform(0.0, 0.6, n_test))
+        return y_val, y_prob_val, y_test, y_prob_test
+
+    def test_test_inherits_validation_threshold(self):
+        y_val, y_prob_val, y_test, y_prob_test = self._make_synthetic()
+
+        val_result = compute_metrics(
+            y_val, y_prob_val,
+            split_name="val",
+            threshold=None,
+            threshold_source="self",
+        )
+        test_result = compute_metrics(
+            y_test, y_prob_test,
+            split_name="test",
+            threshold=val_result.threshold_value,
+            threshold_source="validation",
+        )
+        # The test threshold must equal the val threshold exactly.
+        assert test_result.threshold_value == val_result.threshold_value
+        assert test_result.threshold_source == "validation"
+        assert val_result.threshold_source == "self"
+
+    def test_test_is_not_independently_optimized(self):
+        """If test were optimized independently, threshold could differ."""
+        y_val, y_prob_val, y_test, y_prob_test = self._make_synthetic()
+
+        # What test threshold *would* be if optimized independently?
+        independent_t = select_optimal_threshold(y_test, y_prob_test)
+
+        # What threshold do we actually see when freezing from val?
+        val_result = compute_metrics(y_val, y_prob_val, split_name="val")
+        test_result = compute_metrics(
+            y_test, y_prob_test,
+            split_name="test",
+            threshold=val_result.threshold_value,
+            threshold_source="validation",
+        )
+
+        # The frozen threshold must equal val_result, not the independent one
+        # (unless they happen to coincide — extremely unlikely with these data).
+        assert test_result.threshold_value == val_result.threshold_value
+
+    def test_threshold_metadata_recorded(self):
+        y_val, y_prob_val, y_test, y_prob_test = self._make_synthetic()
+        val_result = compute_metrics(y_val, y_prob_val, split_name="val")
+        test_result = compute_metrics(
+            y_test, y_prob_test,
+            threshold=val_result.threshold_value,
+            threshold_source="validation",
+        )
+        assert test_result.threshold_source == "validation"
+        assert test_result.threshold_metric_used == "f1"
+        # Backwards-compat alias.
+        assert test_result.optimal_threshold == test_result.threshold_value
+
+
+class TestEvaluateModelFreezesThreshold:
+    """End-to-end: train.evaluate_model passes val threshold to test."""
+
+    def test_train_evaluate_freezes_threshold(self):
+        """The pipeline-level evaluate_model must freeze val threshold for test."""
+        from pillprophet.models.train import evaluate_model
+        from pillprophet.models.preprocessing import PreparedData
+        from sklearn.linear_model import LogisticRegression
+
+        rng = np.random.RandomState(0)
+        n = 200
+        X_train = rng.normal(size=(n, 5))
+        y_train = (X_train[:, 0] > 0).astype(int)
+        X_val = rng.normal(size=(60, 5))
+        y_val = (X_val[:, 0] > 0).astype(int)
+        X_test = rng.normal(size=(60, 5))
+        y_test = (X_test[:, 0] > 0).astype(int)
+
+        data = PreparedData(
+            X_train=X_train, X_val=X_val, X_test=X_test,
+            y_train=y_train, y_val=y_val, y_test=y_test,
+            feature_names=[f"f{i}" for i in range(5)],
+            train_ids=[f"NCT{i:08d}" for i in range(n)],
+            val_ids=[f"NCT{n + i:08d}" for i in range(60)],
+            test_ids=[f"NCT{n + 60 + i:08d}" for i in range(60)],
+        )
+
+        model = LogisticRegression(max_iter=1000)
+        model.fit(X_train, y_train)
+
+        val_r, test_r = evaluate_model(
+            model, data,
+            benchmark_name="strict", feature_set="structured", model_name="logistic",
+            bootstrap_iters=0,
+        )
+
+        assert val_r is not None
+        assert test_r is not None
+        assert val_r.threshold_source == "self"
+        assert test_r.threshold_source == "validation"
+        assert test_r.threshold_value == val_r.threshold_value
+
+
+class TestBootstrapCI:
+    def test_returns_tuple_when_well_balanced(self):
+        rng = np.random.RandomState(0)
+        n = 200
+        y_true = rng.randint(0, 2, size=n)
+        y_prob = rng.uniform(0, 1, size=n)
+        ci = _bootstrap_metric(
+            y_true, y_prob, average_precision_score, n_iters=100, seed=1,
+        )
+        assert ci is not None
+        low, high = ci
+        assert 0.0 <= low <= high <= 1.0
+
+    def test_skips_when_not_enough_classes(self):
+        y_true = np.array([1, 0, 1])  # too few of each
+        y_prob = np.array([0.7, 0.3, 0.8])
+        ci = _bootstrap_metric(
+            y_true, y_prob, average_precision_score, n_iters=10, seed=1,
+        )
+        assert ci is None
+
+    def test_seed_makes_results_reproducible(self):
+        rng = np.random.RandomState(0)
+        n = 200
+        y_true = rng.randint(0, 2, size=n)
+        y_prob = rng.uniform(0, 1, size=n)
+        ci_a = _bootstrap_metric(y_true, y_prob, roc_auc_score, n_iters=100, seed=42)
+        ci_b = _bootstrap_metric(y_true, y_prob, roc_auc_score, n_iters=100, seed=42)
+        assert ci_a == ci_b
+
+    def test_compute_metrics_with_bootstrap(self):
+        rng = np.random.RandomState(0)
+        n = 200
+        y_true = rng.randint(0, 2, size=n)
+        y_prob = np.where(y_true == 1, rng.uniform(0.4, 0.95, n), rng.uniform(0.05, 0.6, n))
+        result = compute_metrics(
+            y_true, y_prob, split_name="test",
+            bootstrap_iters=200, bootstrap_seed=7,
+        )
+        assert result.pr_auc_ci is not None
+        assert result.auroc_ci is not None
+        assert result.precision_at_10pct_ci is not None
+        # CI must bracket the point estimate (allow tiny float slack).
+        low, high = result.pr_auc_ci
+        assert low - 1e-3 <= result.pr_auc <= high + 1e-3
+
+    def test_bootstrap_disabled_by_default(self):
+        rng = np.random.RandomState(0)
+        n = 100
+        y_true = rng.randint(0, 2, size=n)
+        y_prob = rng.uniform(0, 1, size=n)
+        result = compute_metrics(y_true, y_prob)
+        assert result.pr_auc_ci is None
+        assert result.auroc_ci is None
+        assert result.bootstrap_iters == 0
+
+
+class TestTfidfTrainOnly:
+    """PR 1: TF-IDF vocabulary fitting must remain train-only."""
+
+    def test_vectorizer_fitted_on_train_only(self):
+        """Words appearing only in val/test should not be in the vocabulary."""
+        from sklearn.feature_extraction.text import TfidfVectorizer
+
+        train_docs = ["alpha beta gamma", "alpha beta", "beta gamma alpha"]
+        # 'unseen_token' appears only in val — must NOT enter vocab.
+        val_docs = ["alpha unseen_token", "gamma alpha"]
+        test_docs = ["beta unseen_token2"]
+
+        vec = TfidfVectorizer(min_df=1)
+        vec.fit(train_docs)  # train-only fit
+        vocab = set(vec.vocabulary_.keys())
+
+        assert "unseen_token" not in vocab
+        assert "unseen_token2" not in vocab
+        assert "alpha" in vocab
+        assert "beta" in vocab
+        assert "gamma" in vocab
+
+        # Transform val/test using the train-fitted vocab.
+        X_val = vec.transform(val_docs)
+        X_test = vec.transform(test_docs)
+        # Vocab size must equal train vocab — no growth from val/test.
+        assert X_val.shape[1] == len(vocab)
+        assert X_test.shape[1] == len(vocab)
+
+    def test_preprocessing_module_uses_train_only_fit(self):
+        """Verify the preprocessing._prepare_text path: vocab from train only."""
+        # We re-implement the logic directly to confirm the behaviour
+        # documented in src/pillprophet/models/preprocessing.py::_prepare_text.
+        # This test guards against future refactors that would refit on val/test.
+        import inspect
+        from pillprophet.models import preprocessing as pp_mod
+        src = inspect.getsource(pp_mod._prepare_text)
+        # The vectorizer must be fit on train_docs and then transform val/test.
+        assert "vectorizer.fit_transform(train_docs)" in src
+        assert "vectorizer.transform(val_docs)" in src
+        assert "vectorizer.transform(test_docs)" in src
+        # Must not call fit/fit_transform on val or test.
+        assert "vectorizer.fit_transform(val_docs)" not in src
+        assert "vectorizer.fit_transform(test_docs)" not in src
+        assert "vectorizer.fit(val_docs)" not in src
+        assert "vectorizer.fit(test_docs)" not in src

@@ -42,6 +42,23 @@ data/external/
 *.gz
 *.tar
 
+# Benchmark provenance: metadata and READMEs ARE tracked,
+# parquet/joblib/JSON results are not. Git negation requires
+# unignoring each parent directory along the path.
+!data/
+data/raw/
+data/interim/
+data/external/
+!data/processed/
+data/processed/*
+!data/processed/benchmarks/
+!data/processed/benchmarks/**
+data/processed/benchmarks/**/*.parquet
+data/processed/benchmarks/**/*.joblib
+data/processed/benchmarks/**/*.csv
+data/processed/benchmarks/**/eval_*.json
+data/processed/benchmarks/**/split_summary.json
+
 # Models
 *.pkl
 *.joblib

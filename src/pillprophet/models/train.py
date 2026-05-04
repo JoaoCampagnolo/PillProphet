@@ -170,13 +170,26 @@ def evaluate_model(
     benchmark_name: str,
     feature_set: str,
     model_name: str,
+    threshold_metric: str = "f1",
+    bootstrap_iters: int = 0,
+    bootstrap_seed: int = 12345,
 ) -> tuple[EvalResult | None, EvalResult | None]:
     """Evaluate a trained model on val and test sets.
+
+    Threshold policy (PR 1):
+    1. Compute val metrics — threshold is optimized on val (source="self").
+    2. Freeze the val threshold and apply it unchanged to test
+       (source="validation").  Test threshold is NEVER independently
+       optimized.
+
+    Bootstrap CIs are computed only on the test split (val is used for
+    threshold selection, not headline reporting of uncertainty).
 
     Returns (val_result, test_result). Either may be None if the split is empty.
     """
     val_result = None
     test_result = None
+    val_threshold = None
 
     if len(data.y_val) > 0:
         y_prob_val = predict_proba(model, data.X_val)
@@ -186,7 +199,12 @@ def evaluate_model(
             benchmark_name=benchmark_name,
             feature_set=feature_set,
             model_name=model_name,
+            threshold=None,                # select on val
+            threshold_source="self",
+            threshold_metric=threshold_metric,
+            bootstrap_iters=0,             # CIs only on test
         )
+        val_threshold = val_result.threshold_value
         logger.info("\n%s", format_eval_summary(val_result))
 
     if len(data.y_test) > 0:
@@ -197,6 +215,11 @@ def evaluate_model(
             benchmark_name=benchmark_name,
             feature_set=feature_set,
             model_name=model_name,
+            threshold=val_threshold,        # frozen from val if available
+            threshold_source=("validation" if val_threshold is not None else "self"),
+            threshold_metric=threshold_metric,
+            bootstrap_iters=bootstrap_iters,
+            bootstrap_seed=bootstrap_seed,
         )
         logger.info("\n%s", format_eval_summary(test_result))
 
