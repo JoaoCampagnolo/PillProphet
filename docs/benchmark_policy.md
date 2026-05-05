@@ -87,3 +87,14 @@ This keeps PR 2 backward-compatible with the parquet at
 |---|---|---|
 | `data/processed/benchmarks/phase2_to_phase3_v0_startdate_split/` | immutable | pre-PR-1 reference |
 | `data/processed/benchmarks/phase2_to_phase3_v1/` | canonical | post-PR-1, named in PR-2 |
+
+## Label vocabularies (PR 3)
+
+Two label vocabularies coexist on the same labels parquet:
+
+| Column | Vocabulary | Used by |
+|---|---|---|
+| `label_value` | Legacy semantic (`advanced`, `hard_negative`, ...) | Current benchmarks (strict / intermediate / broad_filtered / broad_full) |
+| `event_label` | Literal events (`next_phase_successor_observed`, `terminal_negative_event_observed`, ...) | Future multi-phase tasks |
+
+The current benchmark builder still consumes `label_value`; benchmark counts are unchanged by PR 3. See `docs/label_policy.md` for the full mapping table.

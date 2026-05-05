@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 
@@ -77,6 +78,161 @@ def normalize_label_task(labels_df: pd.DataFrame) -> pd.DataFrame:
         df.loc[missing, "label_task"] = df.loc[missing, "label_type"].map(
             _DEFAULT_TASK_BY_TYPE
         )
+    return df
+
+
+# ── Event-based label vocabulary (PR 3) ────────────────────────────────────
+# Literal, observable-evidence labels that sit alongside the legacy
+# ``label_value``.  Future multi-phase tasks should consume these rather
+# than the legacy semantic names.
+
+EVENT_LABEL_RULES_VERSION = "event_labels_v1"
+
+EVENT_COLUMNS = [
+    "event_label",
+    "event_category",
+    "event_detail",
+    "event_observed",
+    "event_date",
+    "evidence_nct_id",
+    "event_rule_version",
+]
+
+# Mapping from legacy ``label_value`` (development) to event columns.
+# Tuple order: (event_label, event_category, event_observed)
+_LEGACY_TO_EVENT_DEV: dict[str, tuple[str, str, bool | None]] = {
+    "advanced": (
+        "next_phase_successor_observed",
+        "positive_event",
+        True,
+    ),
+    "hard_negative": (
+        "terminal_negative_event_observed",
+        "negative_event",
+        True,
+    ),
+    "ambiguous_negative": (
+        "terminal_event_unclear_reason",
+        "ambiguous_terminal_event",
+        True,
+    ),
+    "soft_negative": (
+        "no_successor_observed_after_horizon",
+        "no_event_after_horizon",
+        False,
+    ),
+    "censored_recent": (
+        "insufficient_followup_for_horizon",
+        "censored",
+        None,
+    ),
+    "censored_in_progress": (
+        "still_in_progress_at_censor_date",
+        "censored",
+        None,
+    ),
+    "censored_early_negative": (
+        "terminal_negative_below_horizon",
+        "censored_negative_signal",
+        True,
+    ),
+    "excluded_positive_terminal": (
+        "terminal_positive_signal_without_successor",
+        "excluded_special_case",
+        True,
+    ),
+}
+
+# Generic fallback for any other excluded_* label_value.
+_EXCLUDED_FALLBACK = ("excluded_from_task", "excluded", None)
+
+_NCT_RE = re.compile(r"\bNCT\d{8}\b")
+
+
+def _parse_evidence_nct(evidence: object) -> str | None:
+    """Extract a successor NCT id from an evidence_source string, or None."""
+    if not isinstance(evidence, str):
+        return None
+    m = _NCT_RE.search(evidence)
+    return m.group(0) if m else None
+
+
+def normalize_event_labels(labels_df: pd.DataFrame) -> pd.DataFrame:
+    """Add or fill event-based columns derived from ``label_value``.
+
+    Behavior:
+    - Adds any missing columns in ``EVENT_COLUMNS``.
+    - For development rows whose ``event_label`` is null, fills all
+      event columns from the legacy ``label_value`` via
+      ``_LEGACY_TO_EVENT_DEV`` (or the generic excluded fallback for any
+      ``excluded_*`` value not in the explicit table).
+    - For operational rows, leaves event columns null — the development
+      task vocabulary should not bleed into the operational label set.
+    - Mirrors ``label_date`` into ``event_date`` for filled rows.
+    - Parses ``evidence_nct_id`` from ``evidence_source`` when an NCT id
+      is present (e.g. ``successor=NCT12345678,...``).
+    - Stamps ``event_rule_version = EVENT_LABEL_RULES_VERSION``.
+
+    Idempotent: a second call only fills rows that are still null.
+    """
+    df = labels_df.copy()
+
+    for col in EVENT_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+
+    is_dev = df["label_type"] == "development"
+    needs_fill = is_dev & df["event_label"].isna()
+    if not needs_fill.any():
+        return df
+
+    # Vectorised fill via a pandas Series of mappings.
+    mapping = pd.DataFrame.from_dict(
+        {
+            lv: {
+                "event_label": ev,
+                "event_category": cat,
+                "event_observed": obs,
+            }
+            for lv, (ev, cat, obs) in _LEGACY_TO_EVENT_DEV.items()
+        },
+        orient="index",
+    )
+
+    target = df.loc[needs_fill, "label_value"]
+    mapped_label = target.map(mapping["event_label"])
+    mapped_cat = target.map(mapping["event_category"])
+    mapped_obs = target.map(mapping["event_observed"])
+
+    df.loc[needs_fill, "event_label"] = mapped_label.values
+    df.loc[needs_fill, "event_category"] = mapped_cat.values
+    df.loc[needs_fill, "event_observed"] = mapped_obs.values
+
+    # Generic fallback for unmatched excluded_*.
+    excluded_mask = (
+        needs_fill
+        & df["event_label"].isna()
+        & df["label_value"].fillna("").str.startswith("excluded_")
+    )
+    if excluded_mask.any():
+        ev, cat, obs = _EXCLUDED_FALLBACK
+        df.loc[excluded_mask, "event_label"] = ev
+        df.loc[excluded_mask, "event_category"] = cat
+        df.loc[excluded_mask, "event_observed"] = obs
+        df.loc[excluded_mask, "event_detail"] = df.loc[excluded_mask, "label_value"]
+
+    # Mirror label_date into event_date for newly-filled rows.
+    filled = is_dev & needs_fill
+    if "label_date" in df.columns:
+        df.loc[filled, "event_date"] = df.loc[filled, "label_date"]
+
+    # Parse evidence_nct_id from evidence_source.
+    if "evidence_source" in df.columns:
+        df.loc[filled, "evidence_nct_id"] = (
+            df.loc[filled, "evidence_source"].apply(_parse_evidence_nct)
+        )
+
+    df.loc[filled, "event_rule_version"] = EVENT_LABEL_RULES_VERSION
     return df
 
 # v3 development label values.
@@ -161,9 +317,14 @@ def build_all_labels(
     # PR 2: ensure label_task is populated (older sub-builders may omit it).
     labels_df = normalize_label_task(labels_df)
 
-    # Ensure column order is consistent.
-    extra_cols = [c for c in labels_df.columns if c not in LABEL_COLUMNS]
-    labels_df = labels_df[LABEL_COLUMNS + extra_cols]
+    # PR 3: derive event-based columns from the legacy label_value.
+    labels_df = normalize_event_labels(labels_df)
+
+    # Ensure column order is consistent (legacy columns first, then events,
+    # then any remaining extras like soft_negative flags / followup_months).
+    preferred = LABEL_COLUMNS + EVENT_COLUMNS
+    extra_cols = [c for c in labels_df.columns if c not in preferred]
+    labels_df = labels_df[preferred + extra_cols]
 
     logger.info(
         "Unified label table: %d records (%d operational, %d development).",
@@ -210,6 +371,18 @@ def _build_audit(
             "distribution": subset["label_value"].value_counts().to_dict(),
             "confidence_distribution": subset["label_confidence"].value_counts().to_dict(),
         }
+
+        # PR 3: surface event-label distributions where present.
+        if "event_label" in subset.columns and subset["event_label"].notna().any():
+            type_audit["event_label_distribution"] = (
+                subset["event_label"].value_counts(dropna=False).to_dict()
+            )
+            type_audit["event_category_distribution"] = (
+                subset["event_category"].value_counts(dropna=False).to_dict()
+            )
+            type_audit["event_rule_version"] = (
+                subset["event_rule_version"].dropna().unique().tolist()
+            )
 
         # For development labels, add modeling-ready summary.
         if ltype == "development":

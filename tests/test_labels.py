@@ -1117,3 +1117,271 @@ class TestNormalizeLabelTask:
         })
         out = normalize_label_task(df)
         assert pd.isna(out.loc[0, "label_task"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PR 3: EVENT-BASED LABELS
+# ═══════════════════════════════════════════════════════════════════════════
+
+from pillprophet.labels.label_factory import (
+    EVENT_COLUMNS,
+    EVENT_LABEL_RULES_VERSION,
+    normalize_event_labels,
+)
+
+
+def _dev_row(label_value: str, label_date=None, evidence: str | None = None) -> dict:
+    return {
+        "nct_id": "NCT00000001",
+        "label_type": "development",
+        "label_task": "phase2_to_phase3_v1",
+        "label_value": label_value,
+        "label_date": label_date,
+        "label_confidence": "high",
+        "evidence_source": evidence,
+        "notes": None,
+    }
+
+
+def _op_row(label_value: str = "completed") -> dict:
+    return {
+        "nct_id": "NCT00000099",
+        "label_type": "operational",
+        "label_task": "operational_status_v1",
+        "label_value": label_value,
+        "label_date": None,
+        "label_confidence": "high",
+        "evidence_source": "overall_status='Completed'",
+        "notes": None,
+    }
+
+
+class TestEventLabelMapping:
+    """Each legacy label_value maps to the spec's event vocabulary."""
+
+    @pytest.mark.parametrize("legacy,event_label,event_category,event_observed", [
+        ("advanced", "next_phase_successor_observed", "positive_event", True),
+        ("hard_negative", "terminal_negative_event_observed", "negative_event", True),
+        ("ambiguous_negative", "terminal_event_unclear_reason", "ambiguous_terminal_event", True),
+        ("soft_negative", "no_successor_observed_after_horizon", "no_event_after_horizon", False),
+        ("censored_recent", "insufficient_followup_for_horizon", "censored", None),
+        ("censored_in_progress", "still_in_progress_at_censor_date", "censored", None),
+        ("censored_early_negative", "terminal_negative_below_horizon", "censored_negative_signal", True),
+        ("excluded_positive_terminal", "terminal_positive_signal_without_successor", "excluded_special_case", True),
+    ])
+    def test_explicit_mapping(self, legacy, event_label, event_category, event_observed):
+        df = pd.DataFrame([_dev_row(legacy, label_date="2020-06-15")])
+        out = normalize_event_labels(df)
+        assert out.loc[0, "event_label"] == event_label
+        assert out.loc[0, "event_category"] == event_category
+        # event_observed may be True/False/None; compare carefully.
+        if event_observed is None:
+            assert out.loc[0, "event_observed"] is None or pd.isna(out.loc[0, "event_observed"])
+        else:
+            assert out.loc[0, "event_observed"] == event_observed
+        assert out.loc[0, "event_rule_version"] == EVENT_LABEL_RULES_VERSION
+        # event_date mirrors label_date.
+        assert out.loc[0, "event_date"] == "2020-06-15"
+
+    def test_excluded_wrong_phase_uses_fallback(self):
+        df = pd.DataFrame([_dev_row("excluded_wrong_phase")])
+        out = normalize_event_labels(df)
+        assert out.loc[0, "event_label"] == "excluded_from_task"
+        assert out.loc[0, "event_category"] == "excluded"
+        assert out.loc[0, "event_detail"] == "excluded_wrong_phase"
+        # event_observed is None for fallback excluded.
+        assert out.loc[0, "event_observed"] is None or pd.isna(out.loc[0, "event_observed"])
+
+    def test_other_excluded_uses_fallback(self):
+        for legacy in ("excluded_mixed_phase", "excluded_non_treatment_purpose"):
+            df = pd.DataFrame([_dev_row(legacy)])
+            out = normalize_event_labels(df)
+            assert out.loc[0, "event_label"] == "excluded_from_task"
+            assert out.loc[0, "event_detail"] == legacy
+
+    def test_evidence_nct_parsed(self):
+        df = pd.DataFrame([_dev_row(
+            "advanced",
+            evidence="successor=NCT12345678, phase=Phase 3, sponsor=Acme",
+        )])
+        out = normalize_event_labels(df)
+        assert out.loc[0, "evidence_nct_id"] == "NCT12345678"
+
+    def test_evidence_nct_none_when_no_successor(self):
+        df = pd.DataFrame([_dev_row(
+            "hard_negative",
+            evidence="explicit_negative: lack of efficacy",
+        )])
+        out = normalize_event_labels(df)
+        # The evidence string has no NCT id, so evidence_nct_id is null.
+        v = out.loc[0, "evidence_nct_id"]
+        assert v is None or pd.isna(v)
+
+
+class TestNormalizeEventLabels:
+    def test_adds_all_event_columns_when_missing(self):
+        df = pd.DataFrame([_dev_row("advanced")])
+        out = normalize_event_labels(df)
+        for col in EVENT_COLUMNS:
+            assert col in out.columns
+
+    def test_idempotent(self):
+        df = pd.DataFrame([_dev_row("advanced")])
+        once = normalize_event_labels(df)
+        twice = normalize_event_labels(once)
+        for col in EVENT_COLUMNS:
+            # Element-wise equality, treating NaN/None as equal.
+            a = once[col]
+            b = twice[col]
+            for x, y in zip(a, b):
+                if pd.isna(x) and pd.isna(y):
+                    continue
+                assert x == y
+
+    def test_does_not_overwrite_existing_event_label(self):
+        df = pd.DataFrame([_dev_row("advanced")])
+        df["event_label"] = "manually_set"
+        out = normalize_event_labels(df)
+        # Should not overwrite a non-null event_label.
+        assert out.loc[0, "event_label"] == "manually_set"
+
+    def test_operational_rows_get_null_events(self):
+        df = pd.DataFrame([_op_row("completed")])
+        out = normalize_event_labels(df)
+        for col in EVENT_COLUMNS:
+            assert col in out.columns
+            v = out.loc[0, col]
+            assert v is None or pd.isna(v), f"{col} should be null for operational, got {v!r}"
+
+    def test_old_parquet_without_event_columns_loads(self):
+        """Simulate an older parquet: no event_* columns at all."""
+        df = pd.DataFrame([
+            _dev_row("advanced"),
+            _dev_row("hard_negative"),
+            _op_row("completed"),
+        ])
+        # Drop event columns if any sneak in.
+        df = df[[c for c in df.columns if not c.startswith("event_")
+                 and c != "evidence_nct_id"]]
+        assert "event_label" not in df.columns
+        out = normalize_event_labels(df)
+        assert "event_label" in out.columns
+        # Dev rows mapped, op row null.
+        dev_rows = out[out["label_type"] == "development"]
+        op_rows = out[out["label_type"] == "operational"]
+        assert dev_rows["event_label"].notna().all()
+        assert op_rows["event_label"].isna().all()
+
+
+class TestEventLabelsInBuiltLabels:
+    """Integration: build_all_labels emits event columns end-to-end."""
+
+    def test_dev_labels_get_event_columns(self, dev_config, tmp_path):
+        cohort = _make_df([_make_trial(primary_completion_date="2020-01-01")])
+        all_trials = cohort.copy()
+
+        import yaml
+        cfg_path = tmp_path / "dev.yaml"
+        cfg_path.write_text(yaml.dump(dev_config))
+
+        labels, _ = build_all_labels(
+            cohort, all_trials, dev_config_path=cfg_path, save=False,
+        )
+        for col in EVENT_COLUMNS:
+            assert col in labels.columns
+
+        dev = labels[labels["label_type"] == "development"]
+        # Every dev row gets a non-null event_label and event_category.
+        assert dev["event_label"].notna().all()
+        assert dev["event_category"].notna().all()
+        # event_rule_version stamped on dev rows.
+        assert (dev["event_rule_version"] == EVENT_LABEL_RULES_VERSION).all()
+
+    def test_operational_rows_have_null_events(self, dev_config, tmp_path):
+        cohort = _make_df([_make_trial()])
+        all_trials = cohort.copy()
+
+        import yaml
+        cfg_path = tmp_path / "dev.yaml"
+        cfg_path.write_text(yaml.dump(dev_config))
+
+        labels, _ = build_all_labels(
+            cohort, all_trials, dev_config_path=cfg_path, save=False,
+        )
+        op = labels[labels["label_type"] == "operational"]
+        assert op["event_label"].isna().all()
+        assert op["event_category"].isna().all()
+
+    def test_audit_includes_event_distribution(self, dev_config, tmp_path):
+        cohort = _make_df([_make_trial(primary_completion_date="2020-01-01")])
+        all_trials = cohort.copy()
+
+        import yaml
+        cfg_path = tmp_path / "dev.yaml"
+        cfg_path.write_text(yaml.dump(dev_config))
+
+        _, audit = build_all_labels(
+            cohort, all_trials, dev_config_path=cfg_path, save=False,
+        )
+        dev_audit = audit["label_types"]["development"]
+        assert "event_label_distribution" in dev_audit
+        assert "event_category_distribution" in dev_audit
+        assert "event_rule_version" in dev_audit
+        assert dev_audit["event_rule_version"] == [EVENT_LABEL_RULES_VERSION]
+
+
+class TestBenchmarkCountsUnchanged:
+    """Adding event columns must not change benchmark counts."""
+
+    def _build_test_labels(self):
+        records = []
+        idx = 0
+        # Mix of all label_value classes the benchmark cares about.
+        counts = {
+            "advanced": 12,
+            "hard_negative": 10,
+            "ambiguous_negative": 7,
+            "soft_negative": 20,
+            "censored_recent": 4,
+            "censored_in_progress": 3,
+            "excluded_wrong_phase": 5,
+        }
+        for lv, n in counts.items():
+            for _ in range(n):
+                records.append({
+                    "nct_id": f"NCT{idx:08d}",
+                    "label_type": "development",
+                    "label_task": "phase2_to_phase3_v1",
+                    "label_value": lv,
+                })
+                idx += 1
+        return pd.DataFrame(records)
+
+    def test_strict_count_unchanged_after_normalize(self):
+        from pillprophet.models.splits import build_benchmark_dataset
+        labels = self._build_test_labels()
+        before = build_benchmark_dataset(labels.copy(), "strict")
+        # Apply event-label normalization — should not change which rows
+        # the benchmark builder picks up.
+        labels_norm = normalize_event_labels(labels.copy())
+        after = build_benchmark_dataset(labels_norm, "strict")
+        assert len(before) == len(after)
+        assert before["y"].sum() == after["y"].sum()
+
+    def test_intermediate_count_unchanged(self):
+        from pillprophet.models.splits import build_benchmark_dataset
+        labels = self._build_test_labels()
+        before = build_benchmark_dataset(labels.copy(), "intermediate")
+        labels_norm = normalize_event_labels(labels.copy())
+        after = build_benchmark_dataset(labels_norm, "intermediate")
+        assert len(before) == len(after)
+        assert before["y"].sum() == after["y"].sum()
+
+    def test_broad_full_count_unchanged(self):
+        from pillprophet.models.splits import build_benchmark_dataset
+        labels = self._build_test_labels()
+        before = build_benchmark_dataset(labels.copy(), "broad_full")
+        labels_norm = normalize_event_labels(labels.copy())
+        after = build_benchmark_dataset(labels_norm, "broad_full")
+        assert len(before) == len(after)
+        assert before["y"].sum() == after["y"].sum()
