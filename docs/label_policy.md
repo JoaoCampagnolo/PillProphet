@@ -201,6 +201,51 @@ Every label record now carries a `label_task` string identifying which labeling 
 
 Older parquets without the column are loaded with the same defaults via `pillprophet.labels.label_factory.normalize_label_task()`. The benchmark builder, training script, and audit script all filter by `label_task` (default `phase2_to_phase3_v1`) and namespace their outputs under the task name.
 
-The current development labels are **legacy semantic labels** (`advanced`, `hard_negative`, `ambiguous_negative`, `soft_negative`, `censored_*`, `excluded_*`). A future PR may introduce a parallel set of literal **event-based labels** (e.g. `next_phase_successor_observed`, `terminal_negative_event_observed`, `insufficient_followup_for_horizon`). PR 2 does not touch label semantics — only the task identity wrapper.
+The current development labels are **legacy semantic labels** (`advanced`, `hard_negative`, `ambiguous_negative`, `soft_negative`, `censored_*`, `excluded_*`). PR 2 does not touch label semantics — only the task identity wrapper.
 
 See `docs/benchmark_policy.md` for the broader task family.
+
+## Event-Based Labels (PR 3)
+
+PR 3 adds a parallel set of literal, observable-evidence labels alongside the legacy ones. The legacy `label_value` column is unchanged and still drives the current benchmarks. The new columns sit beside it for future tasks to consume.
+
+### New columns
+
+| Column | Meaning |
+|---|---|
+| `event_label` | Literal event vocabulary (e.g. `next_phase_successor_observed`) |
+| `event_category` | Coarse bucket for benchmark/audit grouping |
+| `event_detail` | Subtype detail (e.g. original `excluded_*` reason) |
+| `event_observed` | Nullable bool: `True` for observed events, `False` for explicit no-event-after-horizon, `None` for censored/excluded |
+| `event_date` | Mirrors `label_date` for now |
+| `evidence_nct_id` | Successor NCT id parsed from `evidence_source` when safe |
+| `event_rule_version` | Constant `event_labels_v1` |
+
+### Mapping (legacy → event)
+
+| `label_value` | `event_label` | `event_category` | `event_observed` |
+|---|---|---|---|
+| `advanced` | `next_phase_successor_observed` | `positive_event` | `True` |
+| `hard_negative` | `terminal_negative_event_observed` | `negative_event` | `True` |
+| `ambiguous_negative` | `terminal_event_unclear_reason` | `ambiguous_terminal_event` | `True` |
+| `soft_negative` | `no_successor_observed_after_horizon` | `no_event_after_horizon` | `False` |
+| `censored_recent` | `insufficient_followup_for_horizon` | `censored` | `None` |
+| `censored_in_progress` | `still_in_progress_at_censor_date` | `censored` | `None` |
+| `censored_early_negative` | `terminal_negative_below_horizon` | `censored_negative_signal` | `True` |
+| `excluded_positive_terminal` | `terminal_positive_signal_without_successor` | `excluded_special_case` | `True` |
+| any other `excluded_*` | `excluded_from_task` | `excluded` | `None` (with `event_detail` = original `label_value`) |
+
+Operational labels leave the event columns null — the development task vocabulary should not bleed across.
+
+### Backward compatibility
+
+`pillprophet.labels.label_factory.normalize_event_labels(df)` adds the columns and fills them from `label_value` when missing. It is idempotent and is automatically called by `build_benchmark_dataset` and the audit script when older parquets are loaded.
+
+### What this PR does *not* do
+
+- It does **not** change `label_value` for any trial.
+- It does **not** alter benchmark counts (strict / intermediate / broad_filtered / broad_full are byte-identical).
+- It does **not** introduce new tasks (`phase1_to_phase2_v1`, `phase3_to_approval_v1`, ...).
+- It does **not** refactor successor matching or any of the regex lexicons.
+
+It only adds the new columns so that future PRs can build the multi-phase task registry on top of an event-based vocabulary.

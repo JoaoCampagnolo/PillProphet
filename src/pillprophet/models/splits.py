@@ -116,10 +116,15 @@ def build_benchmark_dataset(
     if isinstance(benchmark, str):
         benchmark = get_benchmark(benchmark)
 
-    # PR 2: ensure label_task column exists for backward compatibility
-    # with older parquets.  Imported here to avoid a circular import.
-    from pillprophet.labels.label_factory import normalize_label_task
+    # PR 2 + PR 3: ensure label_task and event columns exist for backward
+    # compatibility with older parquets.  Imported here to avoid a
+    # circular import.
+    from pillprophet.labels.label_factory import (
+        normalize_label_task,
+        normalize_event_labels,
+    )
     labels_df = normalize_label_task(labels_df)
+    labels_df = normalize_event_labels(labels_df)
 
     dev = labels_df[
         (labels_df["label_type"] == "development")

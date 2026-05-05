@@ -37,6 +37,12 @@ REVIEW_COLUMNS = [
     "label_confidence",
     "evidence_source",
     "notes",
+    # PR 3: event-based vocabulary
+    "event_label",
+    "event_category",
+    "event_observed",
+    "event_detail",
+    "evidence_nct_id",
     # v3 match metadata (for advanced)
     "successor_phase",
     "temporal_gap_months",
@@ -106,9 +112,13 @@ def main() -> None:
     logger.info("Loading studies from %s", args.studies)
     studies_df = load_dataset(args.studies)
 
-    # ── Normalize task identity (PR 2: backward-compat for old parquets) ──
-    from pillprophet.labels.label_factory import normalize_label_task
+    # ── Normalize task identity + event labels (PR 2 / PR 3) ───────────
+    from pillprophet.labels.label_factory import (
+        normalize_label_task,
+        normalize_event_labels,
+    )
     labels_df = normalize_label_task(labels_df)
+    labels_df = normalize_event_labels(labels_df)
 
     # ── Filter to development labels for the requested task ────────────
     dev_labels = labels_df[
@@ -234,6 +244,20 @@ def main() -> None:
     # ── Summary ─────────────────────────────────────────────────────────
     logger.info("=== Audit Summary (v3) ===")
     logger.info("Buckets:\n%s", audit_out["audit_bucket"].value_counts().to_string())
+
+    # PR 3: surface event-label and event-category distributions over the
+    # full filtered dev_phase set (not just the sampled audit slice).
+    if "event_label" in dev_phase.columns:
+        logger.info(
+            "\nEvent-label distribution (task=%s):\n%s",
+            args.label_task,
+            dev_phase["event_label"].value_counts(dropna=False).to_string(),
+        )
+        logger.info(
+            "\nEvent-category distribution (task=%s):\n%s",
+            args.label_task,
+            dev_phase["event_category"].value_counts(dropna=False).to_string(),
+        )
 
     # Report soft-negative flag distribution if present.
     soft_rows = audit_out[audit_out["audit_bucket"] == "negative (soft)"]
